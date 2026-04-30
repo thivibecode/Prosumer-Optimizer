@@ -1,6 +1,6 @@
 # PV-Eigenverbrauchsanalyse
 
-Interaktives Tool zur Optimierung von PV-Anlage und Batteriespeicher.
+Interaktives Tool zur Optimierung von PV-Anlage und Batteriespeicher..
 
 ## Lokal starten
 
