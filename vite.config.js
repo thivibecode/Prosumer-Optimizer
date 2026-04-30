@@ -6,5 +6,5 @@ import react from '@vitejs/plugin-react';
 // Bei einem User-Pages-Repo (USER.github.io) dagegen base: '/'
 export default defineConfig({
   plugins: [react()],
-  base: './', // relative Pfade -> funktioniert in jedem Unterpfad
-});
+  base: '/Prosumer-Optimizer/'
+})
