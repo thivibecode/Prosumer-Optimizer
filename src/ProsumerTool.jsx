@@ -521,14 +521,14 @@ function runOptimizer(load, totalLoad, params, constraints) {
 const STORAGE_KEY = 'prosumer_tool_state_v7';
 
 const DEFAULTS = {
-  haushaltKWh: 4500, waermeKWh: 12000, warmwasserKWh: 2500, evKWh: 3000,
+  haushaltKWh: 2500, waermeKWh: 6000, warmwasserKWh: 0, evKWh: 1500,
   pvAktiv: true, pvKWp: 10, pvSpezErtrag: 1000,
   speicherAktiv: true, speicherKWh: 10,
   strompreis: 0.32, einspeiseverguetung: 0.0786,
   einspeiseModus: 'fest', // 'fest' | 'keinNegativ' | 'nie'
-  pvKostenProKWp: 1300, speicherKostenProKWh: 600,
+  pvKostenProKWp: 800, speicherKostenProKWh: 400,
   pvLebensdauer: 25, speicherLebensdauer: 15,
-  zinssatz: 0.04, betriebskostenAnteil: 0.015,
+  zinssatz: 0.00, betriebskostenAnteil: 0.0,
   strompreissteigerung: 0.03,
   optKwpMin: 0, optKwpMax: 20,
   optKwhMin: 0, optKwhMax: 15,
