@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from ‘react’;
-import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, ScatterChart, Scatter, Bar, BarChart, ReferenceArea } from ‘recharts’;
+import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, ScatterChart, Scatter, Bar, BarChart } from ‘recharts’;
 
 // ============================================================
 // ECHTE EPEX SPOT PREISE DE/LU 2025
 // Quelle: Bundesnetzagentur SMARD, 15-Min-Daten aggregiert auf Stunden
-// Einheit: ct/kWh Börsenstrompreis (€/MWh ÷ 10)
-// 8760 Stundenwerte, 01.01.2025 00:00 – 31.12.2025 23:00
-// Negativste Stunde: -25.03 ct/kWh | Teuerste: +58.34 ct/kWh | Ø: 8.93 ct/kWh
+// Einheit: ct/kWh Börsenstrompreis (€/MWh / 10)
+// 8760 Stundenwerte, 01.01.2025 00:00 - 31.12.2025 23:00
+// Negativste Stunde: -25.03 ct/kWh | Teuerste: +58.34 ct/kWh | Avg: 8.93 ct/kWh
 // 576 negative Stunden (PV-Überschuss, Wind)
 // ============================================================
 const EPEX_2025_CT = [
@@ -462,37 +462,37 @@ function annuity(r,y){if(r===0)return 1/y;return(r*Math.pow(1+r,y))/(Math.pow(1+
 // ============================================================
 
 // ============================================================
-// SIMULATION — physikalisch korrekte Regeln
+// SIMULATION - physikalisch korrekte Regeln
 //
 // PV-HIERARCHIE (unveränderlich, jede Stunde):
-//   1. PV → Eigenverbrauch
-//   2. PV-Überschuss → Speicher laden
-//   3. Speicher-Rest → Netz (nur PV-Einspeisung, nie Speicher-Entladung)
+//   1. PV -> Eigenverbrauch
+//   2. PV-Überschuss -> Speicher laden
+//   3. Speicher-Rest -> Netz (nur PV-Einspeisung, nie Speicher-Entladung)
 //
 // SPEICHER-REGELN:
 //   - Entlädt ausschließlich für Eigenverbrauch (nie ins Netz)
 //   - Lädt aus PV-Überschuss (immer, Priorität)
 //   - Lädt zusätzlich aus Netz wenn:
-//       • dynamischer Tarif aktiv
-//       • Preis günstig (Roundtrip-Gewinn > 0, inkl. Effizienz-Hurdle)
-//       • SOC-Reserve für erwartete PV-Produktion freigehalten
+//       - dynamischer Tarif aktiv
+//       - Preis günstig (Roundtrip-Gewinn > 0, inkl. Effizienz-Hurdle)
+//       - SOC-Reserve für erwartete PV-Produktion freigehalten
 //         (verhindert dass PV-Strom ins Netz muss weil Speicher voll)
 //
 // ARBITRAGE-ALGORITHMUS (Spread-Trading nach Abramova & Bunn 2021):
 //   Tägliche Vorausplanung mit vollem 24h-Forecast:
 //   1. Baseline-SOC: simuliere Tag ohne Arbitrage (nur EV)
 //   2. Netz-Laden: für jede Stunde h_i prüfe ob spätere Stunde h_j>h_i
-//      existiert mit Nettogewinn (p_j - p_i)×eff - Effizienzverlust > 0.3ct
+//      existiert mit Nettogewinn (p_j - p_i)xeff - Effizienzverlust > 0.3ct
 //      Lade-Limit: battKWh - Reserve(PV-Erwartung ab h_i+1)
 //   3. Backward-DP Entladung: teuerste Bedarfsstunden zuerst,
 //      SOC-Verfügbarkeit wird laufend adjustiert
 //
 // KORREKTHEIT-CHECKS:
-//   ✓ PV-Strom immer zuerst für Eigenverbrauch
-//   ✓ Speicher nie ins Netz
-//   ✓ Netz-Laden nur bei dyn. Tarif + positivem Spread
-//   ✓ SOC-Reserve für PV verhindert Einspeisung-Verluste
-//   ✓ Backward-DP: SOC-Adjustierung nach jeder Entlade-Zuweisung
+//   [OK] PV-Strom immer zuerst für Eigenverbrauch
+//   [OK] Speicher nie ins Netz
+//   [OK] Netz-Laden nur bei dyn. Tarif + positivem Spread
+//   [OK] SOC-Reserve für PV verhindert Einspeisung-Verluste
+//   [OK] Backward-DP: SOC-Adjustierung nach jeder Entlade-Zuweisung
 // ============================================================
 
 function planTagOptimal(load24, pv24, spot24, battKWh, eff, socStart, dynTarif) {
@@ -535,8 +535,8 @@ const p_i = spot24[hi];
   const maxSOCtarget = battKWh - Math.max(battKWh * 0.10, pvReserve);
 
   // Prüfe ob profitable Entlade-Stunde h_j > h_i existiert
-  // Bedingung (Spread-Trading): (p_j - p_i) × eff > |p_i| × (1/eff - 1)
-  // = Entlade-Gewinn × eff > Effizienz-Verlust beim Laden
+  // Bedingung (Spread-Trading): (p_j - p_i) x eff > |p_i| x (1/eff - 1)
+  // = Entlade-Gewinn x eff > Effizienz-Verlust beim Laden
   let bestGain = 0;
   for (let hj = hi + 1; hj < 24; hj++) {
     if (resid[hj] < 0) {  // hj muss Bedarfsstunde sein
@@ -669,7 +669,7 @@ const entZiel = plan ? plan.ez[i] : 0;
 if (netPV >= 0) {
   // ── PV-Überschuss-Stunde ─────────────────────────────
   // 1. PV deckt Last
-  // 2. Überschuss → Speicher
+  // 2. Überschuss -> Speicher
   const chPV = battKWh > 0 ? Math.min(netPV, (battKWh - curSoc) / sqE, maxP) : 0;
   curSoc = Math.min(battKWh, curSoc + chPV * sqE);
   // 3. Netz-Laden (Arbitrage, auch wenn PV da: Reserve war eingeplant)
@@ -1093,14 +1093,7 @@ Min: <span style={{color:’#3b82f6’,fontWeight:600}}>{minSpot.toFixed(1)} ct<
 <Tooltip contentStyle={{background:’#fff’,border:‘1px solid #e5e7eb’,fontSize:11}}
 formatter={(v,n)=>[`${Number(v).toFixed(1)} ct/kWh`,n]}/>
 <Legend wrapperStyle={{fontSize:10}}/>
-{/* Hintergrundfarbe: günstige Stunden grün, teure rot */}
-{dayData.map((d,i) => (
-d.spot < 0 ? (
-<ReferenceArea key={i} x1={d.h} x2={d.h+1} fill="#dcfce7" fillOpacity={0.5}/>
-) : d.spot > maxSpot * 0.7 ? (
-<ReferenceArea key={i} x1={d.h} x2={d.h+1} fill="#fee2e2" fillOpacity={0.4}/>
-) : null
-))}
+{/* Günstig=blau (Börse negativ), Teuer=rot */}
 {isDyn && <Area type="stepAfter" dataKey="ek" stroke="#6366f1" fill="#6366f122" name="Endkundenpreis"/>}
 <Line type="stepAfter" dataKey="spot" stroke="#22d3ee" strokeWidth={2} dot={false} name="Börsenpreis"/>
 <Line type=“stepAfter” dataKey=“fest” stroke=”#ef4444” strokeDasharray=“6 3” dot={false} name={`Festpreis ${(state.strompreis*100).toFixed(0)} ct`}/>
@@ -1361,8 +1354,8 @@ return{kwp,battKWh,autarkie:aut,totalImport:tIm,totalExport:tEx,eigenverbrauch:e
 function spotColor(ekCt) {
 // ekCt: Endkundenpreis brutto ct/kWh
 // Null-Punkt bei ~18.4 ct (= reiner Aufschlag ohne Börsenstrom)
-// <18.4 ct → Blau (günstiger als Aufschlag allein → Börse negativ)
-// 18.4..68 ct → Weiß→Dunkelrot
+// <18.4 ct -> Blau (günstiger als Aufschlag allein -> Börse negativ)
+// 18.4..68 ct -> Weiß->Dunkelrot
 const BASE = 18.4; // Aufschlag brutto wenn Börse = 0
 const MAX  = 68.0; // Dunkelrot-Schwelle (≈ 50 ct Börse × 1.19 + 18.4)
 if (ekCt < BASE) {
@@ -1538,7 +1531,7 @@ const col=accent?(value>=0?’#10b981’:’#ef4444’):’#111827’;
 return (<div style={{display:‘flex’,justifyContent:‘space-between’,padding:sub?‘4px 0 4px 14px’:‘6px 0’,fontSize:sub?12:13,color:sub?’#6b7280’:’#4b5563’,gap:8}}><span style={{fontWeight:bold?700:400,textTransform:bold?‘uppercase’:‘none’,letterSpacing:bold?‘0.05em’:‘normal’}}>{label}</span><span style={{color:bold?col:(sub?’#6b7280’:’#1f2937’),fontWeight:bold?700:500,whiteSpace:‘nowrap’}}>{f}</span></div>);
 }
 function aggHeatmapSpot(prices, ds=5) {
-// Heatmap: Stunde × Tag, Endkundenpreis brutto ct/kWh
+// Heatmap: Stunde x Tag, Endkundenpreis brutto ct/kWh
 const r=[], nd=Math.floor(365/ds);
 for(let d=0;d<nd;d++)
 for(let h=0;h<24;h++){
