@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, ScatterChart, Scatter, Bar, BarChart } from "recharts";
 
 // ============================================================
-// ECHTE EPEX SPOT PREISE DE/LU 2025
+// ECHTE SPOT PREISE DE/LU DAY-AHEAD 2025
 // Quelle: Bundesnetzagentur SMARD, 15-Min-Daten aggregiert auf Stunden
 // Einheit: ct/kWh Börsenstrompreis (€/MWh / 10)
 // 8760 Stundenwerte, 01.01.2025 00:00 - 31.12.2025 23:00
@@ -427,7 +427,6 @@ function genPV(kWh, rng) {
 
 
 const DYN_FIXED_CT = 15.5; // ct/kWh netto: Netz ~9 + Stromsteuer 2.05 + Beschaffung 2.15 + Konzession ~1.5 + Umlage ~0.8
-const DYN_FEE_PA = 5.99 * 12; // 71.88 €/a Grundgebühr (typ. dyn. Tarif DE 2025)
 function spotToEK(spotCt) { return (spotCt + DYN_FIXED_CT) * 1.19; } // ct/kWh brutto inkl. MwSt, kann negativ sein
 
 function sum(a){return a.reduce((s,v)=>s+v,0);}
@@ -729,10 +728,133 @@ function simulate(load, pv, battKWh, spotPrices=null, strat='eigenverbrauch', ta
 
   return { soc, gridImport: gi, gridExport: ge, batteryCharge: bc, batteryDischarge: bd };
 }
+// ============================================================
+// HEMS – Home Energy Management System
+//
+// ALGORITHMUS (regelbasiert, tagesweise):
+// Für jede Lastkomponente mit Verschiebepotenzial (EV, WP) wird
+// das starre Basisprofil ersetzt durch ein optimiertes Profil:
+//
+// EV-LASTVERSCHIEBUNG (Haupthebel):
+//   1. Täglicher Energiebedarf bleibt identisch (nur Timing ändert sich)
+//   2. Ladezeitraum: 0 Uhr bis Abfahrtszeit (konfigurierbar)
+//   3. Stundenranking nach Strategie:
+//      PV-Priorisierung: PV-Überschuss zuerst, dann Preis
+//      Preis-Priorisierung: reiner Spotpreis (Day-Ahead)
+//      Hybrid: gewichteter Score PV + Preis
+//   4. Ladeleistung: konfigurierbar (3.7 / 7.4 / 11 kW)
+//   5. Energie wird auf billigste/PV-reichste Stunden verteilt
+//
+// WP-LASTVERSCHIEBUNG (thermische Trägheit):
+//   1. Flexibilitätsband: ±hemsWpFlex% der Stundenlast (Puffer)
+//   2. Günstigen Stunden (PV/Preis) wird zusätzliche Last zugeteilt
+//   3. Teuren Stunden wird Last abgezogen (vorgeladen)
+//   4. Energiebilanz bleibt täglich neutral (kein Mehr-/Weniger-Verbrauch)
+//
+// AUSGABE: neue load-Arrays (ev_hems, waerme_hems) die die Basiskurven ersetzen
+// ============================================================
+function calcHemsEV(pvArray, spotArray, baseEvArray, hemsParams) {
+  const { abfahrt, ladeleistung, strategie } = hemsParams;
+  const evNew = new Float64Array(8760);
+
+  for (let d = 0; d < 365; d++) {
+    const i0 = d * 24;
+    // Tagesenergiebedarf aus Basisprofil
+    let tagesEnergie = 0;
+    for (let h = 0; h < 24; h++) tagesEnergie += baseEvArray[i0 + h];
+    if (tagesEnergie < 0.001) continue;
+
+    // Verfügbare Ladestunden: 0 bis abfahrt-1
+    const slots = [];
+    for (let h = 0; h < abfahrt; h++) {
+      const pv = pvArray[i0 + h];
+      const spot = spotArray[i0 + h];
+      // Haushaltslast approximation: tagesEnergie ist EV, wir brauchen nur PV-Signal
+      const pvSurplus = Math.max(0, pv);  // absoluter PV in dieser Stunde
+
+      // Score: niedriger = besser (wir sortieren aufsteigend)
+      let score;
+      if (strategie === 'pv') {
+        // Priorisiere PV: je mehr PV, desto besser (negierter Überschuss)
+        score = -pvSurplus * 10 + spot * 0.1;
+      } else if (strategie === 'preis') {
+        // Reiner Preis
+        score = spot;
+      } else {
+        // Hybrid: gleiche Gewichtung
+        score = -pvSurplus * 5 + spot * 0.5;
+      }
+      slots.push({ h, score, maxLade: ladeleistung });
+    }
+
+    // Sortiere: günstigste/PV-reichste Stunde zuerst
+    slots.sort((a, b) => a.score - b.score);
+
+    // Lade-Verteilung
+    let remaining = tagesEnergie;
+    for (const slot of slots) {
+      if (remaining <= 0.001) break;
+      const charged = Math.min(slot.maxLade, remaining);
+      evNew[i0 + slot.h] += charged;
+      remaining -= charged;
+    }
+
+    // Falls nicht genug Stunden vor Abfahrt (seltener Randfall): Rest auf letzten verfügbaren Slot
+    if (remaining > 0.001) {
+      const lastSlot = slots[slots.length - 1];
+      if (lastSlot) evNew[i0 + lastSlot.h] += remaining;
+    }
+  }
+
+  return Array.from(evNew);
+}
+
+function calcHemsWP(pvArray, spotArray, baseWpArray, hemsWpFlex) {
+  // Verschiebt WP-Last täglich in günstige Stunden (thermischer Puffer)
+  const wpNew = [...baseWpArray];
+  const flex = hemsWpFlex / 100;  // z.B. 0.30
+
+  for (let d = 0; d < 365; d++) {
+    const i0 = d * 24;
+    const hours = Array.from({ length: 24 }, (_, h) => {
+      const pv = pvArray[i0 + h];
+      const spot = spotArray[i0 + h];
+      const base = baseWpArray[i0 + h];
+      // Score: PV-Überschuss + günstiger Preis = gut
+      const score = -pv * 5 + spot;
+      return { h, score, base };
+    });
+
+    const daily = hours.reduce((s, x) => s + x.base, 0);
+    if (daily < 0.001) continue;
+
+    // Günstigen Stunden mehr, teuren Stunden weniger
+    const sorted = [...hours].sort((a, b) => a.score - b.score);
+    const n = sorted.length;
+    const budget = daily * flex;  // maximale tägliche Verschiebemasse
+
+    // Einfache Umverteilung: günstigen 25% Stunden aufstocken, teuren 25% reduzieren
+    const nTop = Math.max(1, Math.floor(n * 0.25));
+    const perAdd = budget / nTop;
+    const perSub = budget / nTop;
+
+    for (let k = 0; k < nTop; k++) {
+      const { h } = sorted[k];  // günstig
+      wpNew[i0 + h] = Math.max(0, wpNew[i0 + h] + perAdd);
+    }
+    for (let k = n - nTop; k < n; k++) {
+      const { h } = sorted[k];  // teuer
+      wpNew[i0 + h] = Math.max(0, wpNew[i0 + h] - perSub);
+    }
+  }
+
+  return wpNew;
+}
+
 function calcStromkosten(gridImport, spotPrices, modus, festpreis) {
   if(modus==='fest'||!spotPrices) return sum(gridImport)*festpreis;
   let k=0;for(let i=0;i<gridImport.length;i++) k+=gridImport[i]*spotToEK(spotPrices[i])/100;
-  return k+DYN_FEE_PA;
+  return k;
 }
 function calcEinspeise(gridExport, pv, vergut, modus) {
   if(modus==='nie')return 0;if(modus==='fest')return sum(gridExport)*vergut;
@@ -754,6 +876,14 @@ const DEF={
   optKwpMin:0,optKwpMax:20,optKwhMin:0,optKwhMax:15,optMinROI:0.05,
   weatherSeed:42,
   spotScale:1.0,
+  // HEMS
+  hemsAktiv:false,
+  hemsEvAktiv:true,
+  hemsWpAktiv:false,
+  hemsAbfahrt:7,
+  hemsLadeleistung:7.4,
+  hemsStrategie:'hybrid',
+  hemsWpFlex:20,
 };
 
 export default function ProsumerTool() {
@@ -775,14 +905,62 @@ export default function ProsumerTool() {
     const haushalt=genBdewLoad(state.haushaltKWh,hR);
     const waerme=genSubLoad(SUB_PROFILES.waerme,state.waermeKWh,wR,0.20);
     const ev=genSubLoad(SUB_PROFILES.ev,state.evKWh,eR,0.15);
-    const load=haushalt.map((v,i)=>v+waerme[i]+ev[i]);
     const pvAnn=state.pvAktiv?state.pvKWp*state.pvSpezErtrag:0;
     const pv=state.pvAktiv?genPV(pvAnn,pR):new Array(8760).fill(0);
-    const battKWh=state.speicherAktiv?state.speicherKWh:0;
-    // Echte EPEX 2025 Preise in ct/kWh Börsenstrompreis (DE/LU, SMARD)
     const spotScale = state.spotScale || 1.0;
     const spot = EPEX_2025_CT.map(p => p * spotScale);
+
+    // HEMS: Lastverschiebung vor Simulation
+    let evFinal = ev;
+    let waermeFinal = waerme;
+    if (state.hemsAktiv) {
+      if (state.hemsEvAktiv && state.evKWh > 0) {
+        evFinal = calcHemsEV(pv, spot, ev, {
+          abfahrt: state.hemsAbfahrt || 7,
+          ladeleistung: state.hemsLadeleistung || 7.4,
+          strategie: state.hemsStrategie || 'hybrid',
+        });
+      }
+      if (state.hemsWpAktiv && state.waermeKWh > 0) {
+        waermeFinal = calcHemsWP(pv, spot, waerme, state.hemsWpFlex || 20);
+      }
+    }
+
+    const load=haushalt.map((v,i)=>v+waermeFinal[i]+evFinal[i]);
+    const battKWh=state.speicherAktiv?state.speicherKWh:0;
     const res=simulate(load,pv,battKWh,spot,state.batterieStrategie,state.tarifModus);
+
+    // Baseline ohne HEMS für Vergleich
+    let hemsBaseline = null;
+    if (state.hemsAktiv) {
+      const loadBase = haushalt.map((v,i) => v + waerme[i] + ev[i]);
+      const resBase = simulate(loadBase, pv, battKWh, spot, state.batterieStrategie, state.tarifModus);
+      const kBase = calcStromkosten(resBase.gridImport, spot, state.tarifModus, state.strompreis);
+      const kHems = calcStromkosten(res.gridImport, spot, state.tarifModus, state.strompreis);
+      const einsBase = calcEinspeise(resBase.gridExport, pv, state.einspeiseverguetung, state.einspeiseModus||'fest');
+      const einsHems = calcEinspeise(res.gridExport, pv, state.einspeiseverguetung, state.einspeiseModus||'fest');
+      const importBase = sum(resBase.gridImport);
+      const importHems = sum(res.gridImport);
+      const exportBase = sum(resBase.gridExport);
+      const exportHems = sum(res.gridExport);
+      // Stündlicher Eigenverbrauch = PV - Netzeinspeisung (= was von PV direkt+Speicher genutzt wird)
+      // Einfacher: Eigenverbrauch = min(pv, load) + Speicheranteil ≈ pv - gridExport
+      const evbBase = pv.map((p,i) => Math.max(0, p - resBase.gridExport[i]));
+      const evbHems = pv.map((p,i) => Math.max(0, p - res.gridExport[i]));
+      hemsBaseline = {
+        kostenBase: kBase - einsBase,
+        kostenHems: kHems - einsHems,
+        ersparnis: (kBase - einsBase) - (kHems - einsHems),
+        importDelta: importBase - importHems,
+        exportDelta: exportHems - exportBase,
+        evProfile: evFinal,
+        evProfileBase: ev,
+        wpProfile: waermeFinal,
+        wpProfileBase: waerme,
+        eigenverbrauchBase: evbBase,
+        eigenverbrauchHems: evbHems,
+      };
+    }
     const tL=sum(load),tPV=sum(pv),tIm=sum(res.gridImport),tEx=sum(res.gridExport);
     const ev2=tPV-tEx,aut=tL>0?(tL-tIm)/tL:0,evq=tPV>0?ev2/tPV:0;
     const pvI=state.pvAktiv?state.pvKWp*state.pvKostenProKWp:0;
@@ -798,7 +976,7 @@ export default function ProsumerTool() {
     const jk=pvA+spA+bk,nErs=ers-jk;
     const lcoe=ev2>0?(pvA+spA+bk)/ev2:0;
     const amort=(ers-bk)>0?tI/(ers-bk):Infinity;
-    const avgDyn=state.tarifModus==='dynamisch'&&tIm>0?(kMit-DYN_FEE_PA)/tIm:null;
+    const avgDyn=state.tarifModus==='dynamisch'&&tIm>0?kMit/tIm:null;
     const avgSpot=sum(spot)/spot.length;
     const negH=spot.filter(p=>p<0).length;
     const spotMin=Math.min(...spot);
@@ -817,6 +995,7 @@ export default function ProsumerTool() {
       heatmapLoad:aggHeatmap(load,ds),heatmapPV:aggHeatmap(pv,ds),heatmapImport:aggHeatmap(res.gridImport,ds),heatmapBattery:aggHeatmap(res.soc,ds),
       spot,spotMin,spotMax,heatmapSpot:aggHeatmapSpot(spot,5),
       resSoc:res.soc,resBc:res.batteryCharge,resBd:res.batteryDischarge,resPv:pv,resLoad:load,resGi:res.gridImport,resGe:res.gridExport,
+      hemsBaseline,
     };
   },[state]);
 
@@ -862,7 +1041,7 @@ export default function ProsumerTool() {
       </main>
 
       <footer style={{...S.footer,flexDirection:isMobile?'column':'row',gap:isMobile?6:0,fontSize:9}}>
-        <span>8760h · BDEW H0 · Gauss-Interpolation · EPEX 2025 (Bundesnetzagentur SMARD)</span>
+        <span>8760h · BDEW H0 · Gauss-Interpolation · Day-Ahead 2025 (Bundesnetzagentur SMARD)</span>
         <span>Eingaben werden lokal gespeichert</span>
       </footer>
     </div>
@@ -874,13 +1053,16 @@ export default function ProsumerTool() {
 // ============================================================
 function KpiBar({sim,isMobile,state}) {
   const isDyn=state.tarifModus==='dynamisch';
+  const hemsActive = state.hemsAktiv && sim.hemsBaseline;
   const kpis=[
     {label:'Autarkie',value:`${(sim.autarkie*100).toFixed(1)} %`,accent:'#22d3ee',tip:'Anteil des Stromverbrauchs der durch PV+Speicher gedeckt wird. 100% = vollständige Netz-Unabhängigkeit.'},
     {label:'Eigenverbrauch',value:`${(sim.eigenverbrauchsquote*100).toFixed(1)} %`,accent:'#fbbf24',tip:'Anteil der PV-Erzeugung der selbst genutzt wird (Eigenverbrauch + Speicher). Rest wird ins Netz eingespeist.'},
     {label:'Ersparnis/Jahr',value:`${sim.nettoErsparnis.toLocaleString('de-DE',{maximumFractionDigits:0})} €`,accent:sim.nettoErsparnis>=0?'#10b981':'#ef4444',tip:'Jährliche Ersparnis nach Abzug aller Kapitalkosten (Annuität) und Betriebskosten. Positiv = Anlage wirtschaftlich.'},
-    {label:isDyn?'Ø Bezugspreis':'LCOE Eigenverbrauch',value:isDyn&&sim.avgDynPrice?`${(sim.avgDynPrice*100).toFixed(1)} ct`:`${(sim.lcoeEigenverbrauch*100).toFixed(1)} ct`,accent:'#a78bfa',tip:isDyn?'Durchschnittlicher Endkundenpreis: Börsenstrompreis + feste Aufschläge (Netz, Steuern, Abgaben) inkl. Grundgebühr.':'Effektive Kosten pro selbstgenutzter kWh aus PV+Speicher (Annuität ÷ Eigenverbrauch).'},
+    {label:isDyn?'Ø Bezugspreis':'LCOE Eigenverbrauch',value:isDyn&&sim.avgDynPrice?`${(sim.avgDynPrice*100).toFixed(1)} ct`:`${(sim.lcoeEigenverbrauch*100).toFixed(1)} ct`,accent:'#a78bfa',tip:isDyn?'Durchschnittlicher Endkundenpreis: Börsenstrompreis + feste Aufschläge (Netz, Steuern, Abgaben).':'Effektive Kosten pro selbstgenutzter kWh aus PV+Speicher (Annuität ÷ Eigenverbrauch).'},
     {label:'PV-Erzeugung',value:`${sim.totalPV.toLocaleString('de-DE',{maximumFractionDigits:0})} kWh`,accent:'#f59e0b',tip:'Gesamte PV-Jahresproduktion in kWh. Eigenverbrauch + Netzeinspeisung.'},
-    {label:'Amortisation',value:isFinite(sim.amortisation)?`${sim.amortisation.toFixed(1)} a`:'-',accent:'#f472b6',tip:'Statische Amortisationszeit: Investition ÷ jährliche Brutto-Ersparnis (ohne Kapitalzins).'},
+    hemsActive
+      ? {label:'HEMS-Vorteil',value:`${sim.hemsBaseline.ersparnis>=0?'+':''}${sim.hemsBaseline.ersparnis.toLocaleString('de-DE',{maximumFractionDigits:0})} €/a`,accent:'#10b981',tip:'Jährliche Kostensenkung durch HEMS-Lastverschiebung gegenüber ungesteuertem Laden.'}
+      : {label:'Amortisation',value:isFinite(sim.amortisation)?`${sim.amortisation.toFixed(1)} a`:'-',accent:'#f472b6',tip:'Statische Amortisationszeit: Investition ÷ jährliche Brutto-Ersparnis (ohne Kapitalzins).'},
   ];
   return (
     <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)',gap:8,marginBottom:24}}>
@@ -983,7 +1165,7 @@ function PanelTarif({state,upd,sim,isMobile}) {
   const isArb=state.batterieStrategie==='arbitrage';
   return (
     <div style={S.panel}>
-      <SecTitle nr="03" title="Tarif & Speicherstrategie" sub="Festpreis oder dynamischer EPEX Day-Ahead Tarif · echte Preise 2025" isMobile={isMobile}/>
+      <SecTitle nr="03" title="Tarif & Speicherstrategie" sub="Festpreis oder dynamischer Day-Ahead Tarif · echte Preise 2025" isMobile={isMobile}/>
       <div style={isMobile?S.gm:S.g2}>
         <div style={S.card}>
           <div style={S.cardLabel}>Tarifmodell</div>
@@ -996,15 +1178,15 @@ function PanelTarif({state,upd,sim,isMobile}) {
           {isDyn && <>
             <div style={S.infoBox}>
               <div style={{fontWeight:700,color:'#0e7490',marginBottom:8,fontSize:13}}>Dynamischer Tarif · Preisstruktur DE 2025</div>
-              <div style={{fontSize:12,color:'#164e63',lineHeight:1.8}}>
-                <span style={{display:'block'}}>Grundgebühr: <strong>5,99 €/Monat</strong></span>
+              <div style={{fontSize:13,color:'#164e63',lineHeight:1.8}}>
+                
                 <span style={{display:'block'}}>Börsenstrompreis wird 1:1 weitergegeben (kein Aufschlag)</span>
                 <span style={{display:'block'}}>Feste Aufschläge (netto): <strong>~15,5 ct/kWh</strong></span>
                 <span style={{display:'block',fontSize:10,color:'#0891b2',marginTop:4}}>Netzentgelt ~9 ct · Stromsteuer 2,05 ct · Beschaffungskosten ~2,15 ct · Konzessionsabgabe ~1,5 ct · Umlagen ~0,8 ct → × 1,19 MwSt ≈ 18,4 ct/kWh Aufschlag</span>
               </div>
             </div>
             <div style={{padding:'10px 12px',background:'#ecfeff',border:'1px solid #a5f3fc',marginBottom:12,fontSize:11,color:'#164e63',lineHeight:1.7}}>
-              <div style={{fontWeight:700,marginBottom:4}}>Echte EPEX 2025 Preise</div>
+              <div style={{fontWeight:700,marginBottom:4}}>Echte Day-Ahead Preise 2025</div>
               <div>Quelle: Bundesnetzagentur SMARD · DE/LU Day-Ahead · 8.760 Stundenwerte</div>
               <div>Ø <strong>{(sim.avgSpot*10).toFixed(1)} €/MWh</strong> · {sim.negH} negative Stunden · Min <strong>{(sim.spotMin).toFixed(1)} ct</strong> · Max <strong>{(sim.spotMax).toFixed(1)} ct</strong></div>
             </div>
@@ -1013,7 +1195,7 @@ function PanelTarif({state,upd,sim,isMobile}) {
               <Kpi label="Ø Börsenstrompreis" value={`${(sim.avgSpot).toFixed(1)} ct/kWh`}/>
               <Kpi label="Negative Std./Jahr" value={`${sim.negH} h`}/>
               <Kpi label="Ø Endkundenpreis" value={`${spotToEK(sim.avgSpot).toFixed(1)} ct/kWh`}/>
-              {sim.avgDynPrice&&<Kpi label="Ø Bezugspreis (dyn.)" value={`${(sim.avgDynPrice*100).toFixed(1)} ct/kWh`}/>}
+              {sim.avgDynPrice&&<Kpi label="Ø Bezugspreis" value={`${(sim.avgDynPrice*100).toFixed(1)} ct/kWh`}/>}
             </div>
           </>}
 
@@ -1024,6 +1206,157 @@ function PanelTarif({state,upd,sim,isMobile}) {
         </div>
 
         <div style={S.card}>
+          <div style={S.cardLabel}>HEMS · Lastverschiebung</div>
+          <div style={{fontSize:11,color:'#4b5563',marginBottom:12,lineHeight:1.7,background:'#f0fdf4',padding:'10px 12px',border:'1px solid #86efac'}}>
+            Verschiebt flexible Lasten (E-Auto, Wärmepumpe) zeitlich in Stunden mit hoher PV-Produktion oder günstigem Börsenpreis. Gesamtenergiemenge bleibt identisch.
+          </div>
+          <Toggle label="HEMS aktiv" value={state.hemsAktiv} onChange={v=>upd('hemsAktiv',v)}/>
+
+          {state.hemsAktiv && (() => {
+            const hasEV = state.evKWh > 0;
+            const hasWP = state.waermeKWh > 0;
+            const hb = sim.hemsBaseline;
+            return <>
+              {hb && (
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
+                  <div style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #86efac'}}>
+                    <div style={{fontSize:9,color:'#166534',letterSpacing:'0.1em',textTransform:'uppercase'}}>Kostensenkung</div>
+                    <div style={{fontSize:17,fontWeight:700,color:hb.ersparnis>=0?'#10b981':'#ef4444',marginTop:3}}>
+                      {hb.ersparnis>=0?'+':''}{hb.ersparnis.toLocaleString('de-DE',{maximumFractionDigits:0})} €/a
+                    </div>
+                  </div>
+                  <div style={{padding:'10px 12px',background:'#ecfeff',border:'1px solid #a5f3fc'}}>
+                    <div style={{fontSize:9,color:'#0e7490',letterSpacing:'0.1em',textTransform:'uppercase'}}>Weniger Netzbezug</div>
+                    <div style={{fontSize:17,fontWeight:700,color:'#22d3ee',marginTop:3}}>
+                      -{Math.abs(hb.importDelta).toLocaleString('de-DE',{maximumFractionDigits:0})} kWh/a
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* EV */}
+              <div style={{marginBottom:14}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <span style={{fontSize:12,fontWeight:600,color:'#111827',letterSpacing:'0.04em'}}>E-AUTO</span>
+                  <button onClick={()=>upd('hemsEvAktiv',!state.hemsEvAktiv)}
+                    style={{background:state.hemsEvAktiv&&hasEV?'#22d3ee':'#e5e7eb',border:'none',color:state.hemsEvAktiv&&hasEV?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
+                    {state.hemsEvAktiv&&hasEV?'AKTIV':'AUS'}
+                  </button>
+                </div>
+                {!hasEV && <div style={{fontSize:11,color:'#9ca3af'}}>Kein E-Auto konfiguriert (Tab 01).</div>}
+                {hasEV && state.hemsEvAktiv && <>
+                  <Sl label="Abfahrtszeit" value={state.hemsAbfahrt} min={5} max={11} step={1} unit="Uhr"
+                    onChange={v=>upd('hemsAbfahrt',v)} hint="Auto muss bis zu dieser Uhrzeit vollgeladen sein"/>
+                  <div style={{marginBottom:14}}>
+                    <div style={{fontSize:12,color:'#4b5563',marginBottom:6}}>Ladeleistung</div>
+                    <ModeSwitch options={[{id:3.7,label:'3,7 kW'},{id:7.4,label:'7,4 kW'},{id:11,label:'11 kW'}]}
+                      value={state.hemsLadeleistung} onChange={v=>upd('hemsLadeleistung',parseFloat(v))} small/>
+                    <div style={{fontSize:10,color:'#9ca3af'}}>3,7 kW = Schuko · 7,4 kW = Wallbox 1-ph. · 11 kW = 3-ph.</div>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:12,color:'#4b5563',marginBottom:6}}>Ladestrategie</div>
+                    <ModeSwitch options={[{id:'pv',label:'PV-Priorisierung'},{id:'hybrid',label:'Hybrid'},{id:'preis',label:'Preis'}]}
+                      value={state.hemsStrategie} onChange={v=>upd('hemsStrategie',v)} small/>
+                    <div style={{fontSize:10,color:'#6b7280',marginTop:4}}>
+                      {state.hemsStrategie==='pv'    && 'Laden wenn PV produziert. Maximiert Eigenverbrauch.'}
+                      {state.hemsStrategie==='hybrid' && 'Balance aus PV-Überschuss und Börsenpreis.'}
+                      {state.hemsStrategie==='preis'  && 'Günstigste Spot-Stunden. Optimal bei dyn. Tarif.'}
+                    </div>
+                  </div>
+                </>}
+              </div>
+
+              <div style={{height:1,background:'#e5e7eb',margin:'12px 0'}}/>
+
+              {/* WP */}
+              <div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <span style={{fontSize:12,fontWeight:600,color:'#111827',letterSpacing:'0.04em'}}>WÄRMEPUMPE</span>
+                  <button onClick={()=>upd('hemsWpAktiv',!state.hemsWpAktiv)}
+                    style={{background:state.hemsWpAktiv&&hasWP?'#22d3ee':'#e5e7eb',border:'none',color:state.hemsWpAktiv&&hasWP?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
+                    {state.hemsWpAktiv&&hasWP?'AKTIV':'AUS'}
+                  </button>
+                </div>
+                {!hasWP && <div style={{fontSize:11,color:'#9ca3af'}}>Keine Wärmelast konfiguriert (Tab 01).</div>}
+                {hasWP && state.hemsWpAktiv && <>
+                  <Sl label="Flexibilitätsband" value={state.hemsWpFlex} min={5} max={40} step={5} unit="%"
+                    onChange={v=>upd('hemsWpFlex',v)}
+                    hint="Anteil der WP-Last der täglich verschoben wird. 20% = konservativ, 35% = aggressiv"/>
+                  <div style={{fontSize:10,color:'#6b7280',marginTop:4}}>Thermische Gebäudeträgheit nutzen: WP läuft mittags vor, spart abends.</div>
+                </>}
+              </div>
+
+              {/* Eigenverbrauch-Chart */}
+              {hb && (() => {
+                const [dayIdx, setDayIdx] = React.useState(196);
+                const monthOf = (d) => {
+                  const md=[31,28,31,30,31,30,31,31,30,31,30,31];
+                  const mn=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+                  let a=0; for(let m=0;m<12;m++){if(d<a+md[m])return `${d-a+1}. ${mn[m]}`;a+=md[m];} return '';
+                };
+                const i0 = dayIdx * 24;
+                const dayProfile = Array.from({length:24}, (_,h) => ({
+                  h,
+                  evBase:  hb.evProfileBase[i0+h]||0,
+                  evHems:  hb.evProfile[i0+h]||0,
+                  wpBase:  hb.wpProfileBase[i0+h]||0,
+                  wpHems:  hb.wpProfile[i0+h]||0,
+                  evbBase: hb.eigenverbrauchBase[i0+h]||0,
+                  evbHems: hb.eigenverbrauchHems[i0+h]||0,
+                  pv:      sim.resPv ? sim.resPv[i0+h]||0 : 0,
+                  spot:    sim.spot  ? sim.spot[i0+h]||0  : 0,
+                }));
+                return (
+                  <div style={{marginTop:16}}>
+                    <div style={{height:1,background:'#e5e7eb',margin:'12px 0'}}/>
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+                      <span style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase'}}>Eigenverbrauch · Vorher vs. Nachher</span>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+                      <input type="range" min={0} max={364} value={dayIdx}
+                        onChange={e=>setDayIdx(parseInt(e.target.value))}
+                        style={{flex:1,accentColor:'#22d3ee'}}/>
+                      <span style={{fontSize:11,fontWeight:700,color:'#111827',minWidth:72,textAlign:'right'}}>{monthOf(dayIdx)}</span>
+                    </div>
+                    <div style={{display:'flex',gap:12,flexWrap:'wrap',marginBottom:4,fontSize:9}}>
+                      <span style={{color:'#fbbf24'}}>▒ PV</span>
+                      <span style={{color:'#f97316',fontWeight:600}}>- - Eigenverbr. Basis</span>
+                      <span style={{color:'#10b981',fontWeight:600}}>— Eigenverbr. HEMS</span>
+                      {(state.hemsEvAktiv&&hasEV||state.hemsWpAktiv&&hasWP) && <>
+                        <span style={{color:'#a78bfa',fontWeight:600}}>- - Last Basis</span>
+                        <span style={{color:'#7c3aed',fontWeight:600}}>— Last HEMS</span>
+                      </>}
+                    </div>
+                    <ResponsiveContainer width="100%" height={isMobile?160:190}>
+                      <ComposedChart data={dayProfile} margin={{top:4,right:36,left:-10,bottom:0}}>
+                        <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                        <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
+                        <YAxis yAxisId="kwh" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>v.toFixed(2)}/>
+                        <YAxis yAxisId="price" orientation="right" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>v.toFixed(0)}/>
+                        <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10}}
+                          formatter={(v,n)=>[`${Number(v).toFixed(3)} kWh`,n]} labelFormatter={h=>`${h} Uhr`}/>
+                        <Area yAxisId="kwh" type="monotone" dataKey="pv" fill="#fbbf2425" stroke="#fbbf24" strokeWidth={1} dot={false} name="PV"/>
+                        <Line yAxisId="kwh" type="monotone" dataKey="evbBase" stroke="#f97316" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="Eigenverbr. Basis"/>
+                        <Line yAxisId="kwh" type="monotone" dataKey="evbHems" stroke="#10b981" strokeWidth={2.5} dot={false} name="Eigenverbr. HEMS"/>
+                        {state.hemsEvAktiv && hasEV && <>
+                          <Line yAxisId="kwh" type="stepAfter" dataKey="evBase" stroke="#a78bfa" strokeWidth={1} strokeDasharray="4 3" dot={false} name="EV Basis"/>
+                          <Line yAxisId="kwh" type="stepAfter" dataKey="evHems" stroke="#7c3aed" strokeWidth={1.5} dot={false} name="EV HEMS"/>
+                        </>}
+                        {state.hemsWpAktiv && hasWP && <>
+                          <Line yAxisId="kwh" type="monotone" dataKey="wpBase" stroke="#fb923c" strokeWidth={1} strokeDasharray="4 3" dot={false} name="WP Basis"/>
+                          <Line yAxisId="kwh" type="monotone" dataKey="wpHems" stroke="#dc2626" strokeWidth={1.5} dot={false} name="WP HEMS"/>
+                        </>}
+                        <Line yAxisId="price" type="stepAfter" dataKey="spot" stroke="#d1d5db" strokeWidth={1} strokeDasharray="3 3" dot={false} name="Börsenpreis (ct)"/>
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                    <div style={{fontSize:10,color:'#9ca3af',marginTop:4}}>Fläche zwischen den Linien = HEMS-Mehrnutzung von PV-Strom.</div>
+                  </div>
+                );
+              })()}
+            </>;
+          })()}
+
+          <div style={{height:1,background:'#e5e7eb',margin:'20px 0'}}/>
           <div style={S.cardLabel}>Speicherstrategie</div>
           <ModeSwitch options={[{id:'eigenverbrauch',label:'Eigenverbrauch'},{id:'arbitrage',label:'Arbitrage (Day-Ahead)'}]} value={state.batterieStrategie} onChange={v=>upd('batterieStrategie',v)}/>
 
@@ -1035,7 +1368,7 @@ function PanelTarif({state,upd,sim,isMobile}) {
           {!state.speicherAktiv&&<div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #fbbf24',fontSize:11,color:'#92400e',marginBottom:16}}>Kein Speicher aktiv → Strategie hat keinen Effekt.</div>}
           {isArb && state.tarifModus!=='dynamisch' && <div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #f59e0b',fontSize:11,color:'#92400e',marginBottom:16}}><strong>Hinweis:</strong> Netz-Laden aus dem Stromnetz lohnt sich nur beim dynamischen Tarif (stündlich variable Preise). Mit Festpreis sind Lade- und Entladepreis identisch → Netz-Laden bringt nur Effizienzverluste. Die Timing-Optimierung der Entladung wirkt auch beim Festpreis, bringt dort aber gegenüber klassischem Eigenverbrauch keinen messbaren Unterschied.</div>}
 
-          <div style={{...S.cardLabel,marginTop:20}}>Jahres-Heatmap · EPEX 2025 Endkundenpreis</div>
+          <div style={{...S.cardLabel,marginTop:20}}>Jahres-Heatmap · Day-Ahead Endkundenpreis</div>
           <HeatmapSpot data={sim.heatmapSpot} isMobile={isMobile}/>
 
           <div style={{...S.cardLabel,marginTop:20}}>Strategie-Reaktion · Beispieltag</div>
@@ -1344,19 +1677,7 @@ function PanelOpt({state,upd,sim,isMobile,onOpt,optimizing,optResult,applyOpt}) 
           <div style={S.card}><div style={S.cardLabel}>Sweet-Spot-Methoden</div><StratGrid strats={optResult.strats.filter(s=>s.group==='pareto')} state={state} applyOpt={applyOpt} expId={expId} setExpId={setExpId}/></div>
           <div style={S.card}><div style={S.cardLabel}>Extreme</div><StratGrid strats={optResult.strats.filter(s=>s.group==='extrem')} state={state} applyOpt={applyOpt} expId={expId} setExpId={setExpId}/></div>
         </div>
-        <div style={{...S.card,marginTop:24}}>
-          <div style={S.cardLabel}>Zusatzrendite</div>
-          <ResponsiveContainer width="100%" height={isMobile?200:260}>
-            <LineChart data={optResult.marginal} margin={{top:10,right:10,left:0,bottom:30}}>
-              <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
-              <XAxis dataKey="totalInvest" tick={{fill:'#6b7280',fontSize:10}} label={{value:'Kumulierte Investition [EUR]',position:'insideBottom',offset:-15,fill:'#6b7280',fontSize:11}}/>
-              <YAxis tick={{fill:'#6b7280',fontSize:10}} tickFormatter={v=>`${(v*100).toFixed(0)}%`}/>
-              <Tooltip content={({active,payload})=>{if(!active||!payload||!payload[0])return null;const d=payload[0].payload;return(<div style={{background:'#fff',border:'1px solid #e5e7eb',padding:'8px 10px',fontSize:11}}><div style={{fontWeight:700}}>{d.kwp} kWp · {d.battKWh} kWh</div><div style={{color:d.marginalROI>=state.optMinROI?'#10b981':'#ef4444'}}>Zusatzrendite: {(d.marginalROI*100).toFixed(2)}%</div></div>);}}/>
-              <Line type="stepAfter" dataKey={()=>state.optMinROI} stroke="#ef4444" strokeDasharray="4 4" dot={false} name="Vergleichszins"/>
-              <Line type="monotone" dataKey="marginalROI" stroke="#22d3ee" strokeWidth={2} dot={{r:3,fill:'#22d3ee'}} name="Zusatzrendite"/>
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+
       </>)}
     </div>
   );
@@ -1676,14 +1997,14 @@ function SecTitle({nr,title,sub,isMobile}) {
   return (
     <div style={{marginBottom:24}}>
       <div style={{display:'flex',alignItems:'baseline',gap:isMobile?10:16,flexWrap:'wrap'}}>
-        <span style={{color:'#22d3ee',fontSize:12,letterSpacing:'0.2em'}}>// {nr}</span>
-        <h2 style={{margin:0,fontSize:isMobile?18:24,color:'#111827',fontWeight:600,letterSpacing:'-0.02em'}}>{title}</h2>
+        <span style={{color:'#22d3ee',fontSize:13,letterSpacing:'0.2em'}}>// {nr}</span>
+        <h2 style={{margin:0,fontSize:isMobile?18:26,color:'#111827',fontWeight:600,letterSpacing:'-0.02em'}}>{title}</h2>
       </div>
       {sub&&<div style={{color:'#6b7280',fontSize:12,marginTop:4,marginLeft:isMobile?0:38}}>{sub}</div>}
     </div>
   );
 }
-function Kpi({label,value}) { return (<div style={{padding:'8px 0'}}><div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase'}}>{label}</div><div style={{fontSize:13,color:'#111827',fontWeight:600,marginTop:2}}>{value}</div></div>); }
+function Kpi({label,value}) { return (<div style={{padding:'8px 0'}}><div style={{fontSize:12,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase'}}>{label}</div><div style={{fontSize:15,color:'#111827',fontWeight:600,marginTop:2}}>{value}</div></div>); }
 function Bilanz({label,value,sub,bold,accent,unit='EUR',sign=true}) {
   const f=unit==='EUR'?`${sign&&value>=0?'+':''}${value.toLocaleString('de-DE',{maximumFractionDigits:0})} ${unit}`:`${value.toLocaleString('de-DE',{maximumFractionDigits:0})} ${unit}`;
   const col=accent?(value>=0?'#10b981':'#ef4444'):'#111827';
@@ -1758,10 +2079,10 @@ function aggHeatmap(series,ds=1){
 const S={
   container:{minHeight:'100vh',background:'#f9fafb',color:'#111827',fontFamily:'Arial,sans-serif'},
   header:{display:'flex',justifyContent:'space-between',marginBottom:28,paddingBottom:20,borderBottom:'1px solid #e5e7eb'},
-  headerLabel:{fontSize:11,color:'#22d3ee',letterSpacing:'0.3em',marginBottom:8},
+  headerLabel:{fontSize:13,color:'#22d3ee',letterSpacing:'0.3em',marginBottom:8},
   headerTitle:{margin:0,fontWeight:700,letterSpacing:'-0.03em',lineHeight:1,color:'#111827'},
-  headerSub:{color:'#6b7280',fontSize:12,marginTop:8,letterSpacing:'0.05em'},
-  resetBtn:{background:'transparent',border:'1px solid #e5e7eb',color:'#4b5563',padding:'8px 16px',fontSize:11,letterSpacing:'0.15em',cursor:'pointer',alignSelf:'flex-start'},
+  headerSub:{color:'#6b7280',fontSize:14,marginTop:8,letterSpacing:'0.05em'},
+  resetBtn:{background:'transparent',border:'1px solid #e5e7eb',color:'#4b5563',padding:'8px 16px',fontSize:12,letterSpacing:'0.15em',cursor:'pointer',alignSelf:'flex-start'},
   tabNav:{display:'flex',gap:4,marginBottom:24,borderBottom:'1px solid #e5e7eb'},
   tabBtn:{background:'transparent',border:'none',color:'#6b7280',fontSize:12,letterSpacing:'0.1em',cursor:'pointer',borderBottom:'2px solid transparent'},
   tabBtnActive:{color:'#22d3ee',borderBottom:'2px solid #22d3ee'},
@@ -1769,9 +2090,9 @@ const S={
   g2:{display:'grid',gridTemplateColumns:'1fr 1.4fr',gap:24},
   gm:{display:'flex',flexDirection:'column',gap:16},
   card:{background:'#fff',border:'1px solid #e5e7eb',padding:20},
-  cardLabel:{fontSize:11,color:'#6b7280',letterSpacing:'0.15em',textTransform:'uppercase',marginBottom:16},
+  cardLabel:{fontSize:13,color:'#6b7280',letterSpacing:'0.15em',textTransform:'uppercase',marginBottom:16},
   totalRow:{display:'flex',justifyContent:'space-between',paddingTop:14,marginTop:14,borderTop:'1px solid #e5e7eb',fontSize:14,color:'#22d3ee',textTransform:'uppercase',letterSpacing:'0.1em'},
-  infoRow:{display:'flex',justifyContent:'space-between',padding:'8px 0',fontSize:12,color:'#4b5563'},
+  infoRow:{display:'flex',justifyContent:'space-between',padding:'8px 0',fontSize:14,color:'#4b5563'},
   infoBox:{background:'#ecfeff',border:'1px solid #a5f3fc',padding:'12px 14px',marginBottom:16},
   rAbs:{position:'absolute',top:0,left:0,right:0,width:'100%',height:24,background:'transparent',pointerEvents:'none',appearance:'none',WebkitAppearance:'none',margin:0,padding:0},
   summaryGrid:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4},
