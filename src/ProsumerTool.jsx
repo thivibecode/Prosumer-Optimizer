@@ -498,21 +498,15 @@ function annuity(r,y){if(r===0)return 1/y;return(r*Math.pow(1+r,y))/(Math.pow(1+
 // ============================================================
 
 function planTagOptimal(load24, pv24, spot24, battKWh, eff, socStart, dynTarif) {
+  // MVA: Entlade-getrieben, verteilt auf guenstigste Lade-Stunden
+  // Teuerste Entlade-Stunden bekommen zuerst guenstigste Lade-Kapazitaet.
+  // Mehrere Lade-Stunden koennen eine Entlade-Stunde bedienen (kein Pair-Lock).
+  // EV-Fallback: Eigenverbrauch aus PV/SOC ueber oppCost-Schwelle.
   const sqE  = Math.sqrt(eff);
-  const maxP = battKWh * 0.5;  // 0.5C max Lade-/Entladeleistung
-
-  // Residuallast: >0 = PV-Überschuss, <0 = Netz-Bedarf
+  const maxP = battKWh * 0.5;
   const resid = load24.map((l, h) => pv24[h] - l);
 
-  // Erwarteter zukünftiger PV-Überschuss (kumuliert rückwärts)
-  // pvRem[h] = noch erwartete PV-Überschuss-kWh ab Stunde h
-  const pvRem = new Array(25).fill(0);
-  for (let h = 23; h >= 0; h--) {
-    pvRem[h] = pvRem[h + 1] + Math.max(0, resid[h]);
-  }
-
-  // === SCHRITT 1: Baseline-SOC (nur Eigenverbrauch, kein Netz-Laden) ===
-  const socBL = new Array(25);
+  const socBL = new Array(25).fill(0);
   socBL[0] = socStart;
   for (let h = 0; h < 24; h++) {
     let s = socBL[h];
@@ -523,96 +517,123 @@ function planTagOptimal(load24, pv24, spot24, battKWh, eff, socStart, dynTarif) 
     socBL[h + 1] = s;
   }
 
-  // === SCHRITT 2: Netz-Laden planen (Spread-Trading) ===
-  const netzLade = new Array(24).fill(0);
+  const pvRem = new Array(25).fill(0);
+  for (let h = 23; h >= 0; h--) {
+    pvRem[h] = pvRem[h + 1] + Math.max(0, resid[h]);
+  }
+
+  const netzLade    = new Array(24).fill(0);
+  const entladePlan = new Array(24).fill(0);
+  let   avgLadepreis = 0;
 
   if (dynTarif) {
-    for (let hi = 0; hi < 24; hi++) {
-      const p_i = spot24[hi];
+    const entlKand = [];
+    for (let h = 0; h < 24; h++) {
+      if (resid[h] < 0) entlKand.push([h, spot24[h], -resid[h]]);
+    }
+    entlKand.sort((a, b) => b[1] - a[1]);
 
-      // SOC-Reserve: lasse Platz für erwarteten PV-Überschuss der nächsten Stunden
-      // Mindest-Reserve: 15% Puffer + erwartete PV-Energie (gedämpft mit eff)
-      const pvReserve = Math.min(battKWh * 0.85, pvRem[hi + 1] * sqE);
-      const maxSOCtarget = battKWh - Math.max(battKWh * 0.10, pvReserve);
+    const ladeRem = new Array(24).fill(maxP);
+    const socMax  = socBL.slice();
+    let ladeEnergie = 0, ladeKosten = 0;
 
-      // Prüfe ob profitable Entlade-Stunde h_j > h_i existiert
-      // Bedingung (Spread-Trading): (p_j - p_i) x eff > |p_i| x (1/eff - 1)
-      // = Entlade-Gewinn x eff > Effizienz-Verlust beim Laden
-      let bestGain = 0;
-      for (let hj = hi + 1; hj < 24; hj++) {
-        if (resid[hj] < 0) {  // hj muss Bedarfsstunde sein
-          const gain = (spot24[hj] - p_i) * eff - Math.max(0, p_i) * (1 / eff - 1);
-          if (gain > bestGain) bestGain = gain;
-        }
+    for (const [hj, p_j, bedarf_j] of entlKand) {
+      let entlNoch = bedarf_j - entladePlan[hj];
+      if (entlNoch < 0.01) continue;
+
+      const ladeKand = [];
+      for (let hi = 0; hi < hj; hi++) {
+        if (resid[hi] >= 0 || ladeRem[hi] < 0.01) continue;
+        const gewinn = p_j * eff * eff - spot24[hi];
+        if (gewinn <= 0.1) continue;
+        ladeKand.push([hi, spot24[hi]]);
       }
+      ladeKand.sort((a, b) => a[1] - b[1]);
 
-      // Lade wenn: Nettogewinn > 0.3 ct/kWh Mindestmarge
-      if (bestGain > 0.3) {
-        const socAtHi  = socBL[hi + 1];  // SOC nach Baseline (inkl. PV-Laden)
-        const ladeRaum = Math.max(0, maxSOCtarget - socAtHi);
-        const ch = Math.min(maxP, ladeRaum / sqE);
-        if (ch > 0.05) {
-          netzLade[hi] = ch;
-          // Propagiere SOC-Erhöhung für spätere Reserve-Berechnungen
-          for (let hh = hi + 1; hh < 25; hh++) {
-            socBL[hh] = Math.min(battKWh, socBL[hh] + ch * sqE);
-          }
+      for (const [hi, p_i] of ladeKand) {
+        if (entlNoch < 0.01) break;
+        const pvReserve = Math.min(battKWh * 0.85, pvRem[hi + 1] * sqE);
+        const maxTarget = battKWh - Math.max(battKWh * 0.10, pvReserve);
+        const availSoc  = Math.max(0, (maxTarget - socMax[hi + 1]) / sqE);
+        const ladeKWh   = Math.min(ladeRem[hi], availSoc, entlNoch / (eff * eff));
+        const entlKWh   = ladeKWh * eff * eff;
+        if (ladeKWh < 0.01) continue;
+        netzLade[hi]    += ladeKWh;
+        entladePlan[hj] += entlKWh;
+        ladeRem[hi]     -= ladeKWh;
+        entlNoch        -= entlKWh;
+        ladeEnergie     += ladeKWh;
+        ladeKosten      += spot24[hi] * ladeKWh;
+        for (let hh = hi + 1; hh < 25; hh++) {
+          socMax[hh] = Math.min(battKWh, socMax[hh] + ladeKWh * sqE);
         }
       }
     }
+    avgLadepreis = ladeEnergie > 0 ? ladeKosten / ladeEnergie : 0;
   }
 
-  // === SCHRITT 3: Forward-SOC mit Netz-Laden ===
-  const socFwd = new Array(25);
+  const oppCost = avgLadepreis > 0 ? avgLadepreis / (eff * eff) : 0;
+
+  const socFwd = new Array(25).fill(0);
   socFwd[0] = socStart;
   for (let h = 0; h < 24; h++) {
     let s = socFwd[h];
-    // PV-Laden hat immer Priorität
     if (resid[h] >= 0) {
       const ch = Math.min(resid[h], (battKWh - s) / sqE, maxP);
       s = Math.min(battKWh, s + ch * sqE);
     }
-    // Netz-Laden (zusätzlich, nur wenn noch Raum nach PV-Laden)
     if (netzLade[h] > 0) {
-      const ch = Math.min(netzLade[h], (battKWh - s) / sqE);
-      netzLade[h] = ch;  // actual achievable amount
-      s = Math.min(battKWh, s + ch * sqE);
+      const ch2  = Math.min(netzLade[h], (battKWh - s) / sqE);
+      netzLade[h] = ch2;
+      s = Math.min(battKWh, s + ch2 * sqE);
     }
     socFwd[h + 1] = s;
   }
 
-  // === SCHRITT 4: Backward-DP Entladung ===
-  // Alle Bedarfsstunden, teuerste zuerst.
-  // SOC-Adjustierung nach jeder Zuweisung verhindert Doppelvergabe.
-  const bedarfSorted = [];
+  const evKand = [];
   for (let h = 0; h < 24; h++) {
-    if (resid[h] < 0) bedarfSorted.push({ h, preis: spot24[h], kwh: -resid[h] });
+    if (resid[h] < 0 && entladePlan[h] < 0.01 && netzLade[h] < 0.01 && spot24[h] >= oppCost) {
+      evKand.push([h, spot24[h], -resid[h]]);
+    }
   }
-  bedarfSorted.sort((a, b) => b.preis - a.preis);
+  evKand.sort((a, b) => b[1] - a[1]);
 
-  const entladeZiel = new Array(24).fill(0);
   const socAdj = socFwd.slice();
-
-  for (const { h, kwh } of bedarfSorted) {
-    const avail  = socAdj[h + 1];
-    const output = Math.min(kwh, avail * sqE, maxP);
-    entladeZiel[h] = output;
-    const consumed = output / sqE;
+  for (const [h, preis, kwh] of evKand) {
+    const avail = socAdj[h + 1];
+    const out   = Math.min(kwh, avail * sqE, maxP);
+    entladePlan[h] = out;
+    const consumed = out / sqE;
     for (let hh = h + 1; hh < 25; hh++) {
       socAdj[hh] = Math.max(0, socAdj[hh] - consumed);
     }
   }
 
-  // === SCHRITT 5: SOC-Ende des Tages (Startwert für nächsten Tag) ===
+  const bs = [];
+  for (let h = 0; h < 24; h++) {
+    if (entladePlan[h] > 0.01) bs.push([h, spot24[h], entladePlan[h]]);
+  }
+  bs.sort((a, b) => b[1] - a[1]);
+
+  const entladeZiel = new Array(24).fill(0);
+  const socAdj2    = socFwd.slice();
+  for (const [h, preis, ziel] of bs) {
+    const avail = socAdj2[h + 1];
+    const out   = Math.min(ziel, avail * sqE, maxP);
+    entladeZiel[h] = out;
+    const consumed = out / sqE;
+    for (let hh = h + 1; hh < 25; hh++) {
+      socAdj2[hh] = Math.max(0, socAdj2[hh] - consumed);
+    }
+  }
+
   let soc = socStart;
   for (let h = 0; h < 24; h++) {
     if (resid[h] >= 0) {
       const ch = Math.min(resid[h], (battKWh - soc) / sqE, maxP);
       soc = Math.min(battKWh, soc + ch * sqE);
     }
-    if (netzLade[h] > 0) {
-      soc = Math.min(battKWh, soc + netzLade[h] * sqE);
-    }
+    if (netzLade[h] > 0) soc = Math.min(battKWh, soc + netzLade[h] * sqE);
     if (entladeZiel[h] > 0) {
       const dp = Math.min(entladeZiel[h] / sqE, soc, maxP);
       soc = Math.max(0, soc - dp);
@@ -621,6 +642,7 @@ function planTagOptimal(load24, pv24, spot24, battKWh, eff, socStart, dynTarif) 
 
   return { entladeZiel, netzLade, socEnd: soc };
 }
+
 
 function simulate(load, pv, battKWh, spotPrices=null, strat='eigenverbrauch', tarifModus='fest') {
   const n    = load.length;
@@ -794,6 +816,7 @@ export default function ProsumerTool() {
       daily,winterDay,sommerDay,monthly,
       heatmapLoad:aggHeatmap(load,ds),heatmapPV:aggHeatmap(pv,ds),heatmapImport:aggHeatmap(res.gridImport,ds),heatmapBattery:aggHeatmap(res.soc,ds),
       spot,spotMin,spotMax,heatmapSpot:aggHeatmapSpot(spot,5),
+      resSoc:res.soc,resBc:res.batteryCharge,resBd:res.batteryDischarge,resPv:pv,resLoad:load,resGi:res.gridImport,resGe:res.gridExport,
     };
   },[state]);
 
@@ -1025,8 +1048,16 @@ function PanelTarif({state,upd,sim,isMobile}) {
 
 // Zeigt für einen wählbaren Tag: Börsenpreis + SOC + Lade/Entlade-Verhalten
 function StrategyDayChart({sim, state, isMobile}) {
-  const [dayIdx, setDayIdx] = React.useState(14); // Default: 15. Jan
+  const [dayIdx, setDayIdx] = React.useState(14);
   const isDyn = state.tarifModus === 'dynamisch';
+  const isArb = state.batterieStrategie === 'arbitrage';
+
+  const monthOf = (d) => {
+    const md=[31,28,31,30,31,30,31,31,30,31,30,31];
+    const mn=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+    let a=0; for(let m=0;m<12;m++){if(d<a+md[m])return `${d-a+1}. ${mn[m]}`;a+=md[m];}
+    return '';
+  };
 
   const dayData = React.useMemo(() => {
     const i0 = dayIdx * 24;
@@ -1034,67 +1065,205 @@ function StrategyDayChart({sim, state, isMobile}) {
       const i = i0 + h;
       const spotCt = sim.spot ? sim.spot[i] : 0;
       const ekCt   = spotToEK(spotCt);
-      const soc    = sim.heatmapBattery
-        ? (sim.heatmapBattery.find(d => d.day === Math.floor(dayIdx/5) && d.hour === h)?.value ?? 0)
-        : 0;
-      // Netzbezug und -einspeisung aus dem hourly-Array
-      const gi = sim.heatmapImport
-        ? (sim.heatmapImport.find(d => d.day === Math.floor(dayIdx/5) && d.hour === h)?.value ?? 0)
-        : 0;
+      const soc    = sim.resSoc  ? (sim.resSoc[i]  || 0) : 0;
+      const bc     = sim.resBc   ? (sim.resBc[i]   || 0) : 0;  // Batterie-Laden kWh
+      const bd     = sim.resBd   ? (sim.resBd[i]   || 0) : 0;  // Batterie-Entladen kWh
+      const pv     = sim.resPv   ? (sim.resPv[i]   || 0) : 0;
+      const load   = sim.resLoad ? (sim.resLoad[i]  || 0) : 0;
+
+      // Netzbezug & Einspeisung aus Simulation
+      const gi = sim.resGi ? (sim.resGi[i] || 0) : 0;
+      const ge = sim.resGe ? (sim.resGe[i] || 0) : 0;
+
+      // Energieflüsse aufdröseln:
+      // PV-Direktverbrauch: PV deckt zuerst die Last
+      const pvDirekt  = Math.max(0, Math.min(pv, load));
+      // Netz-Bezug gesamt
+      const nettoGi   = Math.max(0, gi);
+      // Last die aus Netz kommt (nach PV-Direkt und Speicher-Entladung)
+      const lastKwh   = Math.max(0, load - pvDirekt - bd);
+      // Netz-Laden für Speicher
+      const netzLaden = Math.max(0, nettoGi - lastKwh);
+      // PV→Speicher: PV-Überschuss nach Direktverbrauch, der in Speicher geht
+      const pvSpeich  = Math.max(0, bc - netzLaden);
+
+      // Endkundenpreis als Farb-Signal
+      const ekFarbe = ekCt < 18 ? '#3b82f6' : ekCt < 35 ? '#22d3ee' : ekCt < 50 ? '#f59e0b' : '#ef4444';
+
       return {
         h,
-        spot: parseFloat(spotCt.toFixed(2)),
-        ek:   parseFloat(ekCt.toFixed(1)),
-        fest: parseFloat((state.strompreis * 100).toFixed(1)),
+        spot:      parseFloat(spotCt.toFixed(2)),
+        ek:        parseFloat(ekCt.toFixed(1)),
+        fest:      parseFloat((state.strompreis * 100).toFixed(1)),
+        soc:       parseFloat(soc.toFixed(2)),
+        // Stündlicher Netzbezug: aufgeteilt nach Verwendung
+        netzLast:    parseFloat(lastKwh.toFixed(3)),       // Netz→Last (blau)
+        netzSpeich:  parseFloat(netzLaden.toFixed(3)),     // Netz→Speicher (grün)
+        // Einspeisung (negativ für Balken nach unten)
+        einspeis:    ge > 0.01 ? parseFloat((-ge).toFixed(3)) : 0, // PV→Netz (grau)
+        // Speicher-Entladung für Eigenverbrauch
+        entladen:    bd > 0.01 ? parseFloat(bd.toFixed(3)) : 0,    // Speicher→Last (orange)
+        // PV-Direktverbrauch (gestrichelte Linie)
+        pvDirekt:    parseFloat(pvDirekt.toFixed(3)),
+        pvSpeich:    parseFloat(pvSpeich.toFixed(3)),
+        // PV gesamt (für Kontext)
+        pv:          parseFloat(pv.toFixed(3)),
+        last:        parseFloat(load.toFixed(3)),
+        ekFarbe,
       };
     });
   }, [dayIdx, sim, state]);
 
-  // Monatsnamen für Slider-Labels
-  const monthOf = (d) => {
-    const mdays=[31,28,31,30,31,30,31,31,30,31,30,31];
-    const mnames=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
-    let acc=0;
-    for(let m=0;m<12;m++){if(d<acc+mdays[m])return `${d-acc+1}. ${mnames[m]}`;acc+=mdays[m];}
-    return '';
-  };
+  const maxSoc    = state.speicherKWh || 10;
+  const hasStorage = sim.resSoc && sim.resSoc.some(v => v > 0.01);
+  const hasPV      = dayData.some(d => d.pv > 0.01);
+  const hasPVSpeich = dayData.some(d => d.pvSpeich > 0.01);
+  const hasNL      = dayData.some(d => d.netzSpeich > 0.01);
+  const hasEinsp   = dayData.some(d => d.einspeis < -0.01);
 
-  const minSpot = Math.min(...dayData.map(d=>d.spot));
-  const maxSpot = Math.max(...dayData.map(d=>d.spot));
+  // Max kWh für rechte Y-Achse
+  const maxKwh = Math.max(
+    ...dayData.map(d => Math.max(d.netzLast+d.netzSpeich, d.entladen, d.pvDirekt, d.pv, d.last))
+  );
 
   return (
     <div>
-      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:10}}>
+      {/* Slider */}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
         <span style={{fontSize:11,color:'#6b7280'}}>Tag:</span>
         <input type="range" min={0} max={364} value={dayIdx}
           onChange={e=>setDayIdx(parseInt(e.target.value))}
           style={{flex:1,accentColor:'#22d3ee'}}/>
-        <span style={{fontSize:12,fontWeight:600,color:'#111827',minWidth:80}}>{monthOf(dayIdx)}</span>
+        <span style={{fontSize:12,fontWeight:700,color:'#111827',minWidth:80,textAlign:'right'}}>
+          {monthOf(dayIdx)}
+        </span>
       </div>
-      <div style={{fontSize:10,color:'#6b7280',marginBottom:6}}>
-        Min: <span style={{color:'#3b82f6',fontWeight:600}}>{minSpot.toFixed(1)} ct</span> · Max: <span style={{color:'#dc2626',fontWeight:600}}>{maxSpot.toFixed(1)} ct</span> · Börsenpreis
-        {isDyn && <> · Grün = lohnt Netz-Laden · Rot = teuer → Speicher entladen</>}
+
+      {/* Legende */}
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:8,fontSize:9.5,lineHeight:1.8}}>
+        <span style={{color:'#3b82f6',fontWeight:600}}>▮ Netz → Last</span>
+        {hasNL && <span style={{color:'#10b981',fontWeight:600}}>▮ Netz → Speicher</span>}
+        {hasStorage && <span style={{color:'#f59e0b',fontWeight:600}}>▮ Speicher → Last</span>}
+        {hasEinsp && <span style={{color:'#9ca3af',fontWeight:600}}>▮ PV → Netz</span>}
+        {hasPV && <span style={{color:'#fbbf24'}}>- - PV-Direktverbrauch</span>}
+        <span style={{color:'#ef4444'}}>- - Festpreis</span>
+        {isDyn && <span style={{color:'#ec4899',fontWeight:600}}>— Dyn. Tarif</span>}
       </div>
+
+      {/* Haupt-Chart: gestapelte Balken (Energieflüsse) + Preislinie */}
       <ResponsiveContainer width="100%" height={isMobile?200:240}>
-        <ComposedChart data={dayData} margin={{top:8,right:10,left:-15,bottom:0}}>
+        <ComposedChart syncId="daySync" data={dayData} margin={{top:4,right:44,left:-8,bottom:0}}
+          barSize={isMobile?8:11} barGap={0} barCategoryGap="15%">
           <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
-          <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:10}} tickFormatter={h=>`${h}h`}/>
-          <YAxis tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>`${v.toFixed(0)}`}/>
-          <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}
-            formatter={(v,n)=>[`${Number(v).toFixed(1)} ct/kWh`,n]}/>
-          <Legend wrapperStyle={{fontSize:10}}/>
-          {/* Günstig=blau (Börse negativ), Teuer=rot */}
-          {isDyn && <Area type="stepAfter" dataKey="ek" stroke="#6366f1" fill="#6366f122" name="Endkundenpreis"/>}
-          <Line type="stepAfter" dataKey="spot" stroke="#22d3ee" strokeWidth={2} dot={false} name="Börsenpreis"/>
-          <Line type="stepAfter" dataKey="fest" stroke="#ef4444" strokeDasharray="6 3" dot={false} name={`Festpreis ${(state.strompreis*100).toFixed(0)} ct`}/>
+          <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}}
+            tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
+
+          {/* Linke Y-Achse: Energie kWh/h */}
+          <YAxis yAxisId="kwh" tick={{fill:'#6b7280',fontSize:9}}
+            tickFormatter={v=>v===0?'0':`${Math.abs(v).toFixed(1)}`}
+            label={{value:'kWh/h',angle:-90,position:'insideLeft',offset:14,fontSize:8,fill:'#9ca3af'}}
+            domain={[d=>Math.min(0,d-0.1), d=>Math.max(d*1.1,0.5)]}/>
+
+          {/* Rechte Y-Achse: Preis ct/kWh */}
+          <YAxis yAxisId="price" orientation="right"
+            tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>`${v.toFixed(0)}`}
+            label={{value:'ct/kWh',angle:90,position:'insideRight',offset:10,fontSize:8,fill:'#9ca3af'}}/>
+
+          <Tooltip
+            contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10,borderRadius:4}}
+            formatter={(v,n,props)=>{
+              const ct = props.payload;
+              if(n==='PV→Direkt')     return [`${v.toFixed(2)} kWh`,n];
+              if(n==='PV→Speicher')   return [`${v.toFixed(2)} kWh`,n];
+              if(n==='Netz→Last')    return [`${v.toFixed(2)} kWh · ${ct&&ct.ek?ct.ek.toFixed(1):''} ct`,n];
+              if(n==='Netz→Speicher') return [`${v.toFixed(2)} kWh · ${ct&&ct.ek?ct.ek.toFixed(1):''} ct`,n];
+              if(n==='Speicher→Last') return [`${v.toFixed(2)} kWh`,n];
+              if(n==='PV→Netz')      return [`${Math.abs(v).toFixed(2)} kWh · ${(state.einspeiseverguetung*100).toFixed(1)} ct`,n];
+              if(n==='Börsenpreis')   return [`${v.toFixed(2)} ct/kWh`,n];
+              if(n==='Dyn. Tarif (EK)') return [`${v.toFixed(1)} ct/kWh`,n];
+              return [`${Number(v).toFixed(2)}`,n];
+            }}
+            labelFormatter={h=>`${h} Uhr`}/>
+
+          {/* Legend als separater Div oben */}
+
+          {/* Gestapelte Balken: Energieflüsse — alle positiv stackId="a", Einspeisung stackId="b" */}
+          <Bar yAxisId="kwh" dataKey="pvDirekt"   name="PV→Direkt"     stackId="a" fill="#fbbf24" fillOpacity={0.90}/>
+          {hasPVSpeich && <Bar yAxisId="kwh" dataKey="pvSpeich" name="PV→Speicher" stackId="a" fill="#86efac" fillOpacity={0.90}/>}
+          <Bar yAxisId="kwh" dataKey="entladen"   name="Speicher→Last" stackId="a" fill="#a78bfa" fillOpacity={0.90}/>
+          <Bar yAxisId="kwh" dataKey="netzLast"   name="Netz→Last"     stackId="a" fill="#3b82f6" fillOpacity={0.85}/>
+          <Bar yAxisId="kwh" dataKey="netzSpeich" name="Netz→Speicher" stackId="a" fill="#10b981" fillOpacity={0.85}/>
+          {/* Einspeisung nach unten */}
+          <Bar yAxisId="kwh" dataKey="einspeis"   name="PV→Netz"       stackId="b" fill="#9ca3af" fillOpacity={0.7}/>
+
+          {/* Preislinien: Festpreis rot gestrichelt, dyn. EK-Preis pink */}
+          <Line yAxisId="price" type="stepAfter" dataKey="fest"
+            stroke="#ef4444" strokeWidth={1.5} strokeDasharray="6 3" dot={false}
+            name={`Festpreis ${(state.strompreis*100).toFixed(0)} ct`}/>
+          {isDyn && <Line yAxisId="price" type="stepAfter" dataKey="ek"
+            stroke="#ec4899" strokeWidth={2} dot={false} name="Dyn. Tarif (EK)"
+            strokeOpacity={0.9}/>}
         </ComposedChart>
       </ResponsiveContainer>
-      <div style={{fontSize:10,color:'#9ca3af',marginTop:4,lineHeight:1.5}}>
-        Grün = Börsenpreis negativ (Laden lohnt) · Rot = Hochpreisphase (Entladen bevorzugen) · gestrichelt = aktueller Festpreis zum Vergleich
+
+      {/* SOC-Chart */}
+      {hasStorage && (
+        <div style={{marginTop:8}}>
+          <div style={{fontSize:9,color:'#6b7280',marginBottom:2,paddingLeft:4}}>
+            Speicherstand (SOC)
+          </div>
+          <ResponsiveContainer width="100%" height={isMobile?70:90}>
+            <ComposedChart syncId="daySync" data={dayData} margin={{top:2,right:44,left:-8,bottom:0}}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#f3f4f6"/>
+              <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:8}}
+                tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
+              <YAxis yAxisId="left" tick={{fill:'#6b7280',fontSize:8}} domain={[0, maxSoc]}
+                tickFormatter={v=>`${v.toFixed(0)}`}/>
+              <YAxis yAxisId="right" orientation="right" tick={{fill:'#6b7280',fontSize:8}}
+                domain={[0, maxSoc]} tickFormatter={v=>`${v.toFixed(0)}`}/>
+              <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10}}
+                formatter={(v)=>[`${Number(v).toFixed(1)} kWh`,'SOC']}
+                labelFormatter={h=>`${h} Uhr`}/>
+              {/* SOC-Fläche, Farbe je nach Füllstand */}
+              <defs>
+                <linearGradient id="socGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.4}/>
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.05}/>
+                </linearGradient>
+              </defs>
+              <Area yAxisId="left" type="stepAfter" dataKey="soc" stroke="#22d3ee" strokeWidth={1.5}
+                fill="url(#socGrad)" name="SOC" dot={false}/>
+              {/* 20%-Linie */}
+              <Line yAxisId="left" type="stepAfter" dataKey={()=>maxSoc*0.2}
+                stroke="#e5e7eb" strokeDasharray="3 3" dot={false}
+                name="Min-SOC" legendType="none"/>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Status-Info */}
+      <div style={{fontSize:9.5,color:'#6b7280',marginTop:6,lineHeight:1.7,
+                   background:'#f9fafb',padding:'6px 10px',borderRadius:4}}>
+        {!state.speicherAktiv && <span style={{color:'#f59e0b'}}>⚡ Kein Speicher aktiv.</span>}
+        {state.speicherAktiv && !isArb && (
+          <span>Eigenverbrauch-Modus: Speicher entlädt sofort bei Bedarf.
+            <span style={{color:'#22d3ee'}}> → Arbitrage + dyn. Tarif aktivieren</span> für preisgesteuertes Netz-Laden.
+          </span>
+        )}
+        {state.speicherAktiv && isArb && !isDyn && <span style={{color:'#f59e0b'}}>Arbitrage ohne dynamischen Tarif: kein Netz-Laden (Preisinformation fehlt).</span>}
+        {state.speicherAktiv && isArb && isDyn && !hasNL && <span>Kein Netz-Laden heute — Spread zu gering oder SOC-Reserve für PV belegt.</span>}
+        {state.speicherAktiv && isArb && isDyn && hasNL && (
+          <span>
+            <b style={{color:'#10b981'}}>Netz-Laden aktiv</b> in günstigen Stunden →
+            Entladen in teuren Stunden. Blau = Netzbezug für Last · Grün = Netz-Laden für Speicher.
+          </span>
+        )}
       </div>
     </div>
   );
 }
+
 
 function PanelWirtschaft({state,upd,sim,isMobile}) {
   return (
