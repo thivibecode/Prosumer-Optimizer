@@ -1541,7 +1541,7 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
 
   const dayEkMax = isDyn ? Math.max(...dayData.map(d => d.ek)) : state.strompreis * 100;
   const priceMin = isDyn ? Math.min(Math.max(yearEkMin, -15), 0) : 0;
-  const priceMax = isDyn ? Math.min(Math.max(dayEkMax, 60), 100) : state.strompreis * 100 * 1.2;
+  const priceMax = isDyn ? Math.max(dayEkMax * 1.1, 5) : ...
 
   // Nullpunkt-Synchronisation: 0-Linie auf gleicher relativer Höhe auf beiden Achsen
   const kwhRange = kwhMax - kwhMin;
