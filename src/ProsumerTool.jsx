@@ -1539,8 +1539,9 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
   const yearEkMin   = isDyn ? spotToEK(yearSpotMin) : state.strompreis * 100;
   const yearEkMax   = isDyn ? spotToEK(yearSpotMax) : state.strompreis * 100;
 
-  const priceMin = isDyn ? Math.min(yearEkMin, 0) : 0;
-  const priceMax = isDyn ? yearEkMax * 1.05 : state.strompreis * 100 * 1.2;
+  const dayEkMax = isDyn ? Math.max(...dayData.map(d => d.ek)) : state.strompreis * 100;
+  const priceMin = isDyn ? Math.min(Math.max(yearEkMin, -15), 0) : 0;
+  const priceMax = isDyn ? Math.min(Math.max(dayEkMax, 60), 100) : state.strompreis * 100 * 1.2;
 
   // Nullpunkt-Synchronisation: 0-Linie auf gleicher relativer Höhe auf beiden Achsen
   const kwhRange = kwhMax - kwhMin;
@@ -1585,7 +1586,7 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
           <YAxis yAxisId="price" orientation="right"
             tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>`${v.toFixed(0)}`}
             label={{value:'ct/kWh',angle:90,position:'insideRight',offset:10,fontSize:8,fill:'#9ca3af'}}
-            domain={[adjPriceMin, adjPriceMax * 1.05]}/>
+            domain={[adjPriceMin, adjPriceMax]}/>
 
           <Tooltip
             contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10,borderRadius:4}}
