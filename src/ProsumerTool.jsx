@@ -969,7 +969,7 @@ export default function ProsumerTool() {
     const pvA=state.pvAktiv?pvI*annuity(state.zinssatz,state.pvLebensdauer):0;
     const spA=state.speicherAktiv?spI*annuity(state.zinssatz,state.speicherLebensdauer):0;
     const bk=tI*state.betriebskostenAnteil;
-    const kOhne=calcStromkosten(load,spot,state.tarifModus,state.strompreis);
+    const kOhne=sum(load)*state.strompreis; // Baseline immer: Gesamtverbrauch × Festpreis
     const kMit=calcStromkosten(res.gridImport,spot,state.tarifModus,state.strompreis);
     const eins=calcEinspeise(res.gridExport,pv,state.einspeiseverguetung,state.einspeiseModus||'fest');
     const ers=kOhne-(kMit-eins);
@@ -1017,7 +1017,7 @@ export default function ProsumerTool() {
       <header style={{...S.header,flexDirection:isMobile?'column':'row',alignItems:isMobile?'flex-start':'flex-end',gap:isMobile?16:0}}>
         <div>
           <div style={S.headerLabel}>PROSUMER · OPTIMIZER</div>
-          <h1 style={{...S.headerTitle,fontSize:isMobile?28:42}}>Eigenverbrauchs&shy;analyse</h1>
+          <h1 style={{...S.headerTitle,fontSize:isMobile?28:42}}>Prosumer&shy;-Optimizer</h1>
           <div style={S.headerSub}>PV · Speicher · Dynamischer Tarif · Wirtschaftlichkeit</div>
         </div>
         <button onClick={reset} style={S.resetBtn}>Reset</button>
@@ -1026,7 +1026,7 @@ export default function ProsumerTool() {
       <KpiBar sim={sim} isMobile={isMobile} state={state}/>
 
       <nav style={{...S.tabNav,overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-        {[{id:'verbrauch',l:isMobile?'01':'01 · Verbrauch'},{id:'erzeugung',l:isMobile?'02':'02 · Erzeugung'},{id:'tarif',l:isMobile?'03 ⚡':'03 · Tarif & Speicher'},{id:'optimierer',l:isMobile?'04 ★':'04 · Optimierer'},{id:'ergebnis',l:isMobile?'05':'05 · Ergebnis'},{id:'laufzeit',l:isMobile?'06 ∿':'06 · 20-Jahres-Sicht'}].map(t=>(
+        {[{id:'verbrauch',l:isMobile?'01':'01 · Verbrauch'},{id:'erzeugung',l:isMobile?'02':'02 · Erzeugung'},{id:'tarif',l:isMobile?'03 ⚡':'03 · Marktanbindung'},{id:'optimierer',l:isMobile?'04 ★':'04 · Optimierer'},{id:'ergebnis',l:isMobile?'05':'05 · Ergebnis'},{id:'laufzeit',l:isMobile?'06 ∿':'06 · 20-Jahres-Sicht'}].map(t=>(
           <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{...S.tabBtn,...(activeTab===t.id?S.tabBtnActive:{}),padding:isMobile?'12px 14px':'12px 20px',whiteSpace:'nowrap'}}>{t.l}</button>
         ))}
       </nav>
@@ -1061,7 +1061,7 @@ function KpiBar({sim,isMobile,state}) {
     ? 'Tatsächlicher Ø Einkaufspreis aus dem Netz: Gesamtkosten Netzbezug ÷ bezogene kWh. Berücksichtigt selektiven Bezug in günstigen Stunden durch PV/Speicher/HEMS.'
     : 'Konfigurierter Festpreis inkl. aller Steuern und Abgaben.';
   const kpis=[
-    {label:'Autarkie',value:`${(sim.autarkie*100).toFixed(1)} %`,accent:'#22d3ee',tip:'Anteil des Stromverbrauchs der durch PV+Speicher gedeckt wird. 100% = vollständige Netz-Unabhängigkeit.'},
+    {label:'Autarkie',value:`${(sim.autarkie*100).toFixed(1)} %`,accent:'#68A2B9',tip:'Anteil des Stromverbrauchs der durch PV+Speicher gedeckt wird. 100% = vollständige Netz-Unabhängigkeit.'},
     {label:'Eigenverbrauch',value:`${(sim.eigenverbrauchsquote*100).toFixed(1)} %`,accent:'#fbbf24',tip:'Anteil der PV-Erzeugung der selbst genutzt wird (Eigenverbrauch + Speicher). Rest wird ins Netz eingespeist.'},
     {label:'Ersparnis/Jahr',value:`${sim.nettoErsparnis.toLocaleString('de-DE',{maximumFractionDigits:0})} €`,accent:sim.nettoErsparnis>=0?'#10b981':'#ef4444',tip:'Jährliche Ersparnis nach Abzug aller Kapitalkosten (Annuität) und Betriebskosten. Positiv = Anlage wirtschaftlich.'},
     {label:bezugspreisLabel,value:`${bezugspreis.toFixed(1)} ct`,accent:'#3b82f6',tip:bezugspeisTip},
@@ -1100,7 +1100,7 @@ function PanelVerbrauch({state,upd,sim,isMobile}) {
       <SecTitle nr="01" title="Verbrauchskomponenten" sub="Warmwasser ist im BDEW H0 Haushaltsstrom enthalten" isMobile={isMobile}/>
       <div style={isMobile?S.gm:S.g2}>
         <div style={S.card}>
-          <Sl label="Haushaltsstrom (inkl. Warmwasser)" value={state.haushaltKWh} min={0} max={15000} step={100} unit="kWh/a" onChange={v=>upd('haushaltKWh',v)} hint="Typ. 4-Pers-HH: 3500-5500 kWh/a"/>
+          <Sl label="Haushaltsstrom" value={state.haushaltKWh} min={0} max={15000} step={100} unit="kWh/a" onChange={v=>upd('haushaltKWh',v)} hint="Typ. 4-Pers-HH: 3500-5500 kWh/a"/>
           <Sl label="Wärme (Heizung / Wärmepumpe)" value={state.waermeKWh} min={0} max={30000} step={250} unit="kWh/a" onChange={v=>upd('waermeKWh',v)} hint="WP-EFH unsaniert: 8-15.000 / saniert: 4-8.000 kWh"/>
           <Sl label="E-Auto (Heimladung)" value={state.evKWh} min={0} max={15000} step={100} unit="kWh/a" onChange={v=>upd('evKWh',v)} hint="~2700 kWh bei 15.000 km/a und 18 kWh/100km"/>
           <div style={S.totalRow}><span>Gesamt</span><strong>{total.toLocaleString('de-DE')} kWh/a</strong></div>
@@ -1146,7 +1146,7 @@ function PanelErzeugung({state,upd,sim,isMobile}) {
               <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}/><Legend wrapperStyle={{fontSize:11}}/>
               <Area type="monotone" dataKey="pv" fill="#fbbf2455" stroke="#fbbf24" name="PV"/>
               <Line type="monotone" dataKey="load" stroke="#ef4444" name="Last" dot={false} strokeWidth={2}/>
-              <Line type="monotone" dataKey="soc" stroke="#22d3ee" name="SOC" dot={false} strokeWidth={1.5} strokeDasharray="4 2"/>
+              <Line type="monotone" dataKey="soc" stroke="#68A2B9" name="SOC" dot={false} strokeWidth={1.5} strokeDasharray="4 2"/>
             </ComposedChart>
           </ResponsiveContainer>
           <div style={{...S.cardLabel,marginTop:20}}>Tagesprofil · 15. Januar</div>
@@ -1157,7 +1157,7 @@ function PanelErzeugung({state,upd,sim,isMobile}) {
               <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}/><Legend wrapperStyle={{fontSize:11}}/>
               <Area type="monotone" dataKey="pv" fill="#fbbf2455" stroke="#fbbf24" name="PV"/>
               <Line type="monotone" dataKey="load" stroke="#ef4444" name="Last" dot={false} strokeWidth={2}/>
-              <Line type="monotone" dataKey="soc" stroke="#22d3ee" name="SOC" dot={false} strokeWidth={1.5} strokeDasharray="4 2"/>
+              <Line type="monotone" dataKey="soc" stroke="#68A2B9" name="SOC" dot={false} strokeWidth={1.5} strokeDasharray="4 2"/>
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -1198,16 +1198,26 @@ function PanelTarif({state,upd,sim,isMobile}) {
       <span style={{fontSize:11,color:'#6b7280',whiteSpace:'nowrap'}}>Tag:</span>
       <input type="range" min={0} max={364} value={dayIdx}
         onChange={e=>setDayIdx(parseInt(e.target.value))}
-        style={{flex:1,accentColor:'#22d3ee'}}/>
+        style={{flex:1,accentColor:'#68A2B9'}}/>
       <span style={{fontSize:12,fontWeight:700,color:'#111827',minWidth:80,textAlign:'right'}}>{monthOf(dayIdx)}</span>
     </div>
   );
+
+  // HEMS chart data (computed here so it can be rendered in the bottom row)
+  const hemsChartSection = React.useMemo(() => {
+    const hb = sim.hemsBaseline;
+    if (!state.hemsAktiv || !hb) return null;
+    return { hb };
+  }, [state.hemsAktiv, sim.hemsBaseline]);
+
   return (
     <div style={S.panel}>
-      <SecTitle nr="03" title="Tarif & Speicherstrategie" sub="Festpreis oder dynamischer Day-Ahead Tarif · echte Preise 2025" isMobile={isMobile}/>
-      <div style={isMobile?S.gm:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16,alignItems:'start'}}>
+      <SecTitle nr="03" title="Marktanbindung & Strategie" sub="Tarif · HEMS · Speicherstrategie · echte Day-Ahead Preise 2025" isMobile={isMobile}/>
 
-        {/* SPALTE 1: Tarif + Einspeisung */}
+      {/* ZEILE 1: Konfiguration — Tarif links, Speicher+HEMS-Toggle rechts */}
+      <div style={isMobile?S.gm:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,alignItems:'start',marginBottom:16}}>
+
+        {/* KARTE: Tarif + Einspeisung */}
         <div style={S.card}>
           <div style={S.cardLabel}>Tarifmodell</div>
           <ModeSwitch options={[{id:'fest',label:'Festpreis'},{id:'dynamisch',label:'Dynamisch (Day-Ahead)'}]} value={state.tarifModus} onChange={v=>upd('tarifModus',v)}/>
@@ -1239,12 +1249,19 @@ function PanelTarif({state,upd,sim,isMobile}) {
           <ModeSwitch options={[{id:'fest',label:'Immer'},{id:'keinNegativ',label:'Nicht bei neg. Preisen'},{id:'nie',label:'Nie'}]} value={state.einspeiseModus} onChange={v=>upd('einspeiseModus',v)} small/>
         </div>
 
-        {/* SPALTE 2: HEMS */}
+        {/* KARTE: Speicherstrategie + HEMS-Konfiguration */}
         <div style={S.card}>
-          <div style={S.cardLabel}>HEMS · Lastverschiebung</div>
-          <div style={{fontSize:11,color:'#4b5563',marginBottom:12,lineHeight:1.7,background:'#f0fdf4',padding:'10px 12px',border:'1px solid #86efac'}}>
-            Verschiebt flexible Lasten (E-Auto, Wärmepumpe) zeitlich in Stunden mit hoher PV-Produktion oder günstigem Börsenpreis. Gesamtenergiemenge bleibt identisch.
+          <div style={S.cardLabel}>Speicherstrategie</div>
+          <ModeSwitch options={[{id:'eigenverbrauch',label:'Eigenverbrauch'},{id:'arbitrage',label:'Arbitrage (Day-Ahead)'}]} value={state.batterieStrategie} onChange={v=>upd('batterieStrategie',v)}/>
+          <div style={{fontSize:11,color:'#4b5563',margin:'10px 0 16px',lineHeight:1.6,background:'#f9fafb',padding:'10px 12px',border:'1px solid #e5e7eb'}}>
+            {!isArb&&<><strong>Eigenverbrauch:</strong> Speicher lädt bei PV-Überschuss, entlädt zur Lastdeckung. Klassisch, ohne Preisoptimierung.</>}
+            {isArb&&<><strong>Arbitrage:</strong> Speicher entlädt bevorzugt in den teuersten Stunden. Bei dynamischem Tarif: Netz-Laden in günstigen Stunden sofern Spread nach Roundtrip-Verlusten positiv.</>}
           </div>
+          {!state.speicherAktiv&&<div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #fbbf24',fontSize:11,color:'#92400e',marginBottom:16}}>Kein Speicher aktiv → Strategie hat keinen Effekt.</div>}
+          {isArb&&state.tarifModus!=='dynamisch'&&<div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #f59e0b',fontSize:11,color:'#92400e',marginBottom:16}}><strong>Hinweis:</strong> Netz-Laden lohnt sich nur beim dynamischen Tarif.</div>}
+
+          <div style={{height:1,background:'#e5e7eb',margin:'16px 0'}}/>
+          <div style={S.cardLabel}>HEMS · Lastverschiebung</div>
           <Toggle label="HEMS aktiv" value={state.hemsAktiv} onChange={v=>upd('hemsAktiv',v)}/>
           {state.hemsAktiv && (() => {
             const hasEV = state.evKWh > 0;
@@ -1252,7 +1269,7 @@ function PanelTarif({state,upd,sim,isMobile}) {
             const hb = sim.hemsBaseline;
             return <>
               {hb && (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,margin:'12px 0'}}>
                   <div style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #86efac'}}>
                     <div style={{fontSize:9,color:'#166534',letterSpacing:'0.1em',textTransform:'uppercase'}}>Kostensenkung</div>
                     <div style={{fontSize:17,fontWeight:700,color:hb.ersparnis>=0?'#10b981':'#ef4444',marginTop:3}}>
@@ -1261,120 +1278,184 @@ function PanelTarif({state,upd,sim,isMobile}) {
                   </div>
                   <div style={{padding:'10px 12px',background:'#ecfeff',border:'1px solid #a5f3fc'}}>
                     <div style={{fontSize:9,color:'#0e7490',letterSpacing:'0.1em',textTransform:'uppercase'}}>Weniger Netzbezug</div>
-                    <div style={{fontSize:17,fontWeight:700,color:'#22d3ee',marginTop:3}}>
+                    <div style={{fontSize:17,fontWeight:700,color:'#68A2B9',marginTop:3}}>
                       -{Math.abs(hb.importDelta).toLocaleString('de-DE',{maximumFractionDigits:0})} kWh/a
                     </div>
                   </div>
                 </div>
               )}
-              <div style={{marginBottom:14}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div style={{marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:12,fontWeight:600,color:'#111827',letterSpacing:'0.04em'}}>E-AUTO</span>
                   <button onClick={()=>upd('hemsEvAktiv',!state.hemsEvAktiv)}
-                    style={{background:state.hemsEvAktiv&&hasEV?'#22d3ee':'#e5e7eb',border:'none',color:state.hemsEvAktiv&&hasEV?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
+                    style={{background:state.hemsEvAktiv&&hasEV?'#68A2B9':'#e5e7eb',border:'none',color:state.hemsEvAktiv&&hasEV?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
                     {state.hemsEvAktiv&&hasEV?'AKTIV':'AUS'}
                   </button>
                 </div>
                 {!hasEV && <div style={{fontSize:11,color:'#9ca3af'}}>Kein E-Auto konfiguriert (Tab 01).</div>}
                 {hasEV && state.hemsEvAktiv && <>
                   <Sl label="Abfahrtszeit" value={state.hemsAbfahrt} min={5} max={11} step={1} unit="Uhr" onChange={v=>upd('hemsAbfahrt',v)} hint="Auto muss bis zu dieser Uhrzeit vollgeladen sein"/>
-                  <div style={{marginBottom:14}}>
+                  <div style={{marginBottom:10}}>
                     <div style={{fontSize:12,color:'#4b5563',marginBottom:6}}>Ladeleistung</div>
                     <ModeSwitch options={[{id:3.7,label:'3,7 kW'},{id:7.4,label:'7,4 kW'},{id:11,label:'11 kW'}]} value={state.hemsLadeleistung} onChange={v=>upd('hemsLadeleistung',parseFloat(v))} small/>
-                    <div style={{fontSize:10,color:'#9ca3af'}}>3,7 kW = Schuko · 7,4 kW = Wallbox 1-ph. · 11 kW = 3-ph.</div>
                   </div>
-                  <div style={{marginBottom:8}}>
+                  <div style={{marginBottom:6}}>
                     <div style={{fontSize:12,color:'#4b5563',marginBottom:6}}>Ladestrategie</div>
                     <ModeSwitch options={[{id:'pv',label:'PV-Priorisierung'},{id:'hybrid',label:'Hybrid'},{id:'preis',label:'Preis'}]} value={state.hemsStrategie} onChange={v=>upd('hemsStrategie',v)} small/>
-                    <div style={{fontSize:10,color:'#6b7280',marginTop:4}}>
-                      {state.hemsStrategie==='pv'    && 'Laden wenn PV produziert. Maximiert Eigenverbrauch.'}
-                      {state.hemsStrategie==='hybrid' && 'Balance aus PV-Überschuss und Börsenpreis.'}
-                      {state.hemsStrategie==='preis'  && 'Günstigste Spot-Stunden. Optimal bei dyn. Tarif.'}
-                    </div>
                   </div>
                 </>}
               </div>
-              <div style={{height:1,background:'#e5e7eb',margin:'12px 0'}}/>
+              <div style={{height:1,background:'#e5e7eb',margin:'8px 0'}}/>
               <div>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:12,fontWeight:600,color:'#111827',letterSpacing:'0.04em'}}>WÄRMEPUMPE</span>
                   <button onClick={()=>upd('hemsWpAktiv',!state.hemsWpAktiv)}
-                    style={{background:state.hemsWpAktiv&&hasWP?'#22d3ee':'#e5e7eb',border:'none',color:state.hemsWpAktiv&&hasWP?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
+                    style={{background:state.hemsWpAktiv&&hasWP?'#68A2B9':'#e5e7eb',border:'none',color:state.hemsWpAktiv&&hasWP?'#fff':'#4b5563',padding:'3px 10px',fontSize:10,cursor:'pointer',fontWeight:700}}>
                     {state.hemsWpAktiv&&hasWP?'AKTIV':'AUS'}
                   </button>
                 </div>
                 {!hasWP && <div style={{fontSize:11,color:'#9ca3af'}}>Keine Wärmelast konfiguriert (Tab 01).</div>}
                 {hasWP && state.hemsWpAktiv && <>
                   <Sl label="Flexibilitätsband" value={state.hemsWpFlex} min={5} max={40} step={5} unit="%" onChange={v=>upd('hemsWpFlex',v)} hint="Anteil der WP-Last der täglich verschoben wird. 20% = konservativ, 35% = aggressiv"/>
-                  <div style={{fontSize:10,color:'#6b7280',marginTop:4}}>Thermische Gebäudeträgheit nutzen: WP läuft mittags vor, spart abends.</div>
                 </>}
               </div>
-              {hb && (()=>{
-                const _hasEV = state.evKWh > 0;
-                const _hasWP = state.waermeKWh > 0;
-                const i0 = dayIdx * 24;
-                const dayProfile = Array.from({length:24}, (_,h) => ({
-                  h,
-                  evBase:  hb.evProfileBase[i0+h]||0, evHems:  hb.evProfile[i0+h]||0,
-                  wpBase:  hb.wpProfileBase[i0+h]||0, wpHems:  hb.wpProfile[i0+h]||0,
-                  evbBase: hb.eigenverbrauchBase[i0+h]||0, evbHems: hb.eigenverbrauchHems[i0+h]||0,
-                  pv: sim.resPv?sim.resPv[i0+h]||0:0, spot: sim.spot?sim.spot[i0+h]||0:0,
-                }));
-                const showEV = state.hemsEvAktiv && _hasEV;
-                const showWP = state.hemsWpAktiv && _hasWP;
-                return (
-                  <div style={{marginTop:16}}>
-                    <div style={{height:1,background:'#e5e7eb',margin:'12px 0'}}/>
-                    <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:4}}>Eigenverbrauch · Vorher vs. Nachher</div>
-                    {daySlider}
-                    <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:4,fontSize:9}}>
-                      <span style={{color:'#fbbf24'}}>▒ PV</span>
-                      <span style={{color:'#f97316',fontWeight:600}}>- - Eigenverbr. Basis</span>
-                      <span style={{color:'#10b981',fontWeight:600}}>— Eigenverbr. HEMS</span>
-                      {showEV&&<><span style={{color:'#a78bfa',fontWeight:600}}>- - EV Basis</span><span style={{color:'#7c3aed',fontWeight:600}}>— EV HEMS</span></>}
-                      {showWP&&<><span style={{color:'#fb923c',fontWeight:600}}>- - WP Basis</span><span style={{color:'#dc2626',fontWeight:600}}>— WP HEMS</span></>}
-                    </div>
-                    <ResponsiveContainer width="100%" height={isMobile?160:190}>
-                      <ComposedChart data={dayProfile} margin={{top:4,right:36,left:-10,bottom:0}}>
-                        <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
-                        <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
-                        <YAxis yAxisId="kwh" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>v.toFixed(2)}/>
-                        <YAxis yAxisId="price" orientation="right" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>v.toFixed(0)}/>
-                        <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10}} formatter={(v,n)=>[`${Number(v).toFixed(3)} kWh`,n]} labelFormatter={h=>`${h} Uhr`}/>
-                        <Area yAxisId="kwh" type="monotone" dataKey="pv" fill="#fbbf2425" stroke="#fbbf24" strokeWidth={1} dot={false} name="PV"/>
-                        <Line yAxisId="kwh" type="monotone" dataKey="evbBase" stroke="#f97316" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="Eigenverbr. Basis"/>
-                        <Line yAxisId="kwh" type="monotone" dataKey="evbHems" stroke="#10b981" strokeWidth={2.5} dot={false} name="Eigenverbr. HEMS"/>
-                        {showEV&&<><Line yAxisId="kwh" type="stepAfter" dataKey="evBase" stroke="#a78bfa" strokeWidth={1.5} strokeDasharray="4 3" dot={false} name="EV Basis"/><Line yAxisId="kwh" type="stepAfter" dataKey="evHems" stroke="#7c3aed" strokeWidth={2} dot={false} name="EV HEMS"/></>}
-                        {showWP&&<><Line yAxisId="kwh" type="monotone" dataKey="wpBase" stroke="#fb923c" strokeWidth={1.5} strokeDasharray="4 3" dot={false} name="WP Basis"/><Line yAxisId="kwh" type="monotone" dataKey="wpHems" stroke="#dc2626" strokeWidth={2} dot={false} name="WP HEMS"/></>}
-                        <Line yAxisId="price" type="stepAfter" dataKey="spot" stroke="#d1d5db" strokeWidth={1} strokeDasharray="3 3" dot={false} name="Börsenpreis (ct)"/>
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                    <div style={{fontSize:10,color:'#9ca3af',marginTop:4}}>Fläche zwischen den Eigenverbrauchslinien = HEMS-Mehrnutzung. Last-Linien zeigen die Verschiebung.</div>
-                  </div>
-                );
-              })()}
             </>;
           })()}
         </div>
-
-        {/* SPALTE 3: Speicherstrategie */}
-        <div style={S.card}>
-          <div style={S.cardLabel}>Speicherstrategie</div>
-          <ModeSwitch options={[{id:'eigenverbrauch',label:'Eigenverbrauch'},{id:'arbitrage',label:'Arbitrage (Day-Ahead)'}]} value={state.batterieStrategie} onChange={v=>upd('batterieStrategie',v)}/>
-          <div style={{fontSize:11,color:'#4b5563',margin:'10px 0 16px',lineHeight:1.6,background:'#f9fafb',padding:'10px 12px',border:'1px solid #e5e7eb'}}>
-            {!isArb&&<><strong>Eigenverbrauch:</strong> Speicher lädt bei PV-Überschuss, entlädt zur Lastdeckung. Klassisch, ohne Preisoptimierung.</>}
-            {isArb&&<><strong>Arbitrage (Timing-Optimierung):</strong> Speicher entlädt bevorzugt in den teuersten Stunden des Tages um teuren Netzbezug zu vermeiden. Bei dynamischem Tarif: Speicher lädt zusätzlich aus dem Netz in günstigen Stunden sofern der Spread nach Roundtrip-Verlusten positiv ist. PV-Strom geht immer zuerst in Eigenverbrauch, dann Speicher — Überschuss ins Netz.</>}
-          </div>
-          {!state.speicherAktiv&&<div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #fbbf24',fontSize:11,color:'#92400e',marginBottom:16}}>Kein Speicher aktiv → Strategie hat keinen Effekt.</div>}
-          {isArb&&state.tarifModus!=='dynamisch'&&<div style={{padding:'10px 12px',background:'#fef3c7',border:'1px solid #f59e0b',fontSize:11,color:'#92400e',marginBottom:16}}><strong>Hinweis:</strong> Netz-Laden lohnt sich nur beim dynamischen Tarif. Mit Festpreis sind Lade- und Entladepreis identisch → nur Effizienzverluste.</div>}
-          <div style={{...S.cardLabel,marginTop:20}}>Jahres-Heatmap · Day-Ahead Endkundenpreis</div>
-          <HeatmapSpot data={sim.heatmapSpot} isMobile={isMobile}/>
-          <div style={{...S.cardLabel,marginTop:20}}>Strategie-Reaktion · Beispieltag</div>
-          {daySlider}
-          <StrategyDayChart sim={sim} state={state} isMobile={isMobile} dayIdx={dayIdx}/>
-        </div>
-
       </div>
+
+      {/* ZEILE 2: Jahres-Heatmap volle Breite */}
+      <div style={{...S.card,marginBottom:16}}>
+        <div style={S.cardLabel}>Jahres-Heatmap · Day-Ahead Endkundenpreis</div>
+        <HeatmapSpot data={sim.heatmapSpot} isMobile={isMobile}/>
+      </div>
+
+      {/* ZEILE 3: Tag-Slider + zwei Charts nebeneinander (Desktop) */}
+      <div style={{...S.card,marginBottom:0}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4,gap:16}}>
+          <div style={{...S.cardLabel,marginBottom:0}}>Tagesanalyse</div>
+          <div style={{flex:1,maxWidth:400}}>{daySlider}</div>
+        </div>
+        <div style={isMobile?S.gm:{display:'grid',gridTemplateColumns:state.hemsAktiv&&sim.hemsBaseline?'1fr 1fr':'1fr',gap:20,alignItems:'start'}}>
+          {/* Strategie-Reaktion */}
+          <div>
+            <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:8}}>Strategie-Reaktion · Energieflüsse & Preis</div>
+            <StrategyDayChart sim={sim} state={state} isMobile={isMobile} dayIdx={dayIdx}/>
+          </div>
+          {/* HEMS Vorher vs. Nachher — nur wenn aktiv */}
+          {state.hemsAktiv && sim.hemsBaseline && (() => {
+            const hb = sim.hemsBaseline;
+            const hasEV = state.evKWh > 0;
+            const hasWP = state.waermeKWh > 0;
+            const i0 = dayIdx * 24;
+            const dayProfile = Array.from({length:24}, (_,h) => ({
+              h,
+              evBase:  hb.evProfileBase[i0+h]||0, evHems:  hb.evProfile[i0+h]||0,
+              wpBase:  hb.wpProfileBase[i0+h]||0, wpHems:  hb.wpProfile[i0+h]||0,
+              evbBase: hb.eigenverbrauchBase[i0+h]||0, evbHems: hb.eigenverbrauchHems[i0+h]||0,
+              pv: sim.resPv?sim.resPv[i0+h]||0:0,
+              spot: sim.spot?sim.spot[i0+h]||0:0,
+            }));
+            const showEV = state.hemsEvAktiv && hasEV;
+            const showWP = state.hemsWpAktiv && hasWP;
+            // Skalierung: Nullpunkt beider Achsen angleichen
+            const maxKwh = Math.max(...dayProfile.map(d=>Math.max(d.pv,d.evbBase,d.evbHems,d.evBase||0,d.evHems||0,d.wpBase||0,d.wpHems||0,0.1)));
+            const spotVals = dayProfile.map(d=>d.spot);
+            const spotMin = Math.min(...spotVals);
+            const spotMax = Math.max(...spotVals);
+            // Gleicher Nullpunkt: kwhRange/spotRange so dass 0 auf gleicher Höhe
+            const kwhLow = 0, kwhHigh = maxKwh * 1.15;
+            const kwhRange = kwhHigh - kwhLow;
+            // 0 soll bei gleichem Anteil auf der Achse liegen: anteil = (0 - kwhLow)/kwhRange = kwhLow/kwhRange = 0 → passt schon da kwhLow=0
+            // Für Spot: 0 soll auch bei Anteil 0 liegen (unterer Rand), daher min = min(spotMin,0), range = spotMax - min
+            const priceMin = Math.min(spotMin, 0);
+            const priceMax = spotMax * 1.1;
+            return (
+              <div>
+                <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:8}}>HEMS · Eigenverbrauch Vorher vs. Nachher</div>
+                <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:6,fontSize:9}}>
+                  <span style={{color:'#fbbf24'}}>▒ PV</span>
+                  <span style={{color:'#f97316',fontWeight:600}}>- - Eigenverbr. Basis</span>
+                  <span style={{color:'#10b981',fontWeight:600}}>— Eigenverbr. HEMS</span>
+                  <span style={{color:'#94a3b8',fontWeight:600}}>— Börsenpreis (ct)</span>
+                </div>
+                <ResponsiveContainer width="100%" height={isMobile?160:190}>
+                  <ComposedChart data={dayProfile} margin={{top:4,right:44,left:-8,bottom:0}}>
+                    <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                    <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
+                    <YAxis yAxisId="kwh" tick={{fill:'#6b7280',fontSize:9}}
+                      domain={[kwhLow, kwhHigh]}
+                      tickFormatter={v=>v.toFixed(2)}
+                      label={{value:'kWh/h',angle:-90,position:'insideLeft',offset:14,fontSize:8,fill:'#9ca3af'}}/>
+                    <YAxis yAxisId="price" orientation="right" tick={{fill:'#6b7280',fontSize:9}}
+                      domain={[priceMin, priceMax]}
+                      tickFormatter={v=>v.toFixed(0)}
+                      label={{value:'ct/kWh',angle:90,position:'insideRight',offset:10,fontSize:8,fill:'#9ca3af'}}/>
+                    <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10}}
+                      formatter={(v,n)=>n==='Börsenpreis (ct)'?[`${Number(v).toFixed(1)} ct`,n]:[`${Number(v).toFixed(3)} kWh`,n]}
+                      labelFormatter={h=>`${h} Uhr`}/>
+                    <ReferenceLine yAxisId="kwh" y={0} stroke="#e5e7eb"/>
+                    <ReferenceLine yAxisId="price" y={0} stroke="#94a3b8" strokeDasharray="3 3"/>
+                    <Area yAxisId="kwh" type="monotone" dataKey="pv" fill="#fbbf2425" stroke="#fbbf24" strokeWidth={1} dot={false} name="PV"/>
+                    <Line yAxisId="kwh" type="monotone" dataKey="evbBase" stroke="#f97316" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="Eigenverbr. Basis"/>
+                    <Line yAxisId="kwh" type="monotone" dataKey="evbHems" stroke="#10b981" strokeWidth={2.5} dot={false} name="Eigenverbr. HEMS"/>
+                    <Line yAxisId="price" type="stepAfter" dataKey="spot" stroke="#94a3b8" strokeWidth={1} strokeDasharray="3 3" dot={false} name="Börsenpreis (ct)"/>
+                  </ComposedChart>
+                </ResponsiveContainer>
+
+                {/* Separate Sub-Charts für EV und WP Verschiebung */}
+                {(showEV || showWP) && (() => {
+                  const evMax = Math.max(0.05, ...dayProfile.map(d => Math.max(d.evBase||0, d.evHems||0)));
+                  const wpMax = Math.max(0.05, ...dayProfile.map(d => Math.max(d.wpBase||0, d.wpHems||0)));
+                  return (
+                    <div style={{marginTop:10,borderTop:'1px solid #f3f4f6',paddingTop:8}}>
+                      <div style={{fontSize:9,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>
+                        Last-Verschiebung · Vorher (gestrichelt) vs. Nachher (durchgezogen)
+                      </div>
+                      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:4,fontSize:9}}>
+                        {showEV&&<><span style={{color:'#a78bfa',fontWeight:600}}>- - EV Basis</span><span style={{color:'#7c3aed',fontWeight:600}}>— EV HEMS</span></>}
+                        {showWP&&<><span style={{color:'#fb923c',fontWeight:600}}>- - WP Basis</span><span style={{color:'#dc2626',fontWeight:600}}>— WP HEMS</span></>}
+                        <span style={{color:'#fbbf24'}}>▒ PV</span>
+                      </div>
+                      <ResponsiveContainer width="100%" height={isMobile?110:130}>
+                        <ComposedChart data={dayProfile} margin={{top:2,right:44,left:-8,bottom:0}}>
+                          <CartesianGrid strokeDasharray="2 4" stroke="#f3f4f6"/>
+                          <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:8}} tickFormatter={h=>`${h}h`} interval={isMobile?3:2}/>
+                          <YAxis yAxisId="last" tick={{fill:'#6b7280',fontSize:8}}
+                            domain={[0, Math.max(evMax, wpMax) * 1.2]}
+                            tickFormatter={v=>v.toFixed(2)}
+                            label={{value:'kWh/h',angle:-90,position:'insideLeft',offset:14,fontSize:7,fill:'#9ca3af'}}/>
+                          <YAxis yAxisId="pv2" orientation="right" tick={{fill:'#6b7280',fontSize:8}}
+                            domain={[0, Math.max(evMax, wpMax) * 1.2]}
+                            tickFormatter={()=>''}/>
+                          <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10}}
+                            formatter={(v,n)=>[`${Number(v).toFixed(3)} kWh`,n]}
+                            labelFormatter={h=>`${h} Uhr`}/>
+                          <Area yAxisId="pv2" type="monotone" dataKey="pv" fill="#fbbf2418" stroke="#fbbf2460" strokeWidth={1} dot={false} name="PV"/>
+                          {showEV&&<>
+                            <Line yAxisId="last" type="stepAfter" dataKey="evBase" stroke="#a78bfa" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="EV Basis"/>
+                            <Line yAxisId="last" type="stepAfter" dataKey="evHems" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="EV HEMS"/>
+                          </>}
+                          {showWP&&<>
+                            <Line yAxisId="last" type="monotone" dataKey="wpBase" stroke="#fb923c" strokeWidth={1.5} strokeDasharray="5 3" dot={false} name="WP Basis"/>
+                            <Line yAxisId="last" type="monotone" dataKey="wpHems" stroke="#dc2626" strokeWidth={2.5} dot={false} name="WP HEMS"/>
+                          </>}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                      <div style={{fontSize:9,color:'#9ca3af',marginTop:2}}>
+                        Abstand zwischen Basis- und HEMS-Linie = verschobene Last. PV-Fläche im Hintergrund zeigt Erzeugungsfenster.
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div style={{fontSize:10,color:'#9ca3af',marginTop:6}}>Fläche zwischen Eigenverbrauchslinien = HEMS-Mehrnutzung. Negative Börsenpreise sichtbar unter der Nulllinie.</div>
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
     </div>
   );
 }
@@ -1413,7 +1494,7 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
       const pvSpeich  = Math.max(0, bc - netzLaden);
 
       // Endkundenpreis als Farb-Signal
-      const ekFarbe = ekCt < 18 ? '#3b82f6' : ekCt < 35 ? '#22d3ee' : ekCt < 50 ? '#f59e0b' : '#ef4444';
+      const ekFarbe = ekCt < 18 ? '#3b82f6' : ekCt < 35 ? '#68A2B9' : ekCt < 50 ? '#f59e0b' : '#ef4444';
 
       return {
         h,
@@ -1446,10 +1527,32 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
   const hasNL      = dayData.some(d => d.netzSpeich > 0.01);
   const hasEinsp   = dayData.some(d => d.einspeis < -0.01);
 
-  // Max kWh für rechte Y-Achse
-  const maxKwh = Math.max(
-    ...dayData.map(d => Math.max(d.netzLast+d.netzSpeich, d.entladen, d.pvDirekt, d.pv, d.last))
-  );
+  // Dual-Achsen: gleicher Nullpunkt
+  // kWh-Achse: min = min(0, min Einspeisung), max = Maximalwert * 1.1
+  const kwhMin = Math.min(0, ...dayData.map(d => d.einspeis));
+  const kwhMax = Math.max(0.5, ...dayData.map(d => d.netzLast+d.netzSpeich+d.entladen+d.pvDirekt+(d.pvSpeich||0)));
+
+  // Preisachse: bei dynamischem Tarif → fixe Jahresextremwerte (EK-Preis = spotToEK(spot))
+  // damit jeder Tag im Jahreskontext lesbar ist und negative Preise immer sichtbar sind
+  const yearSpotMin = isDyn && sim.spot ? Math.min(...sim.spot) : 0;
+  const yearSpotMax = isDyn && sim.spot ? Math.max(...sim.spot) : 0;
+  const yearEkMin   = isDyn ? spotToEK(yearSpotMin) : state.strompreis * 100;
+  const yearEkMax   = isDyn ? spotToEK(yearSpotMax) : state.strompreis * 100;
+
+  const priceMin = isDyn ? Math.min(yearEkMin, 0) : 0;
+  const priceMax = isDyn ? yearEkMax * 1.05 : state.strompreis * 100 * 1.2;
+
+  // Nullpunkt-Synchronisation: 0-Linie auf gleicher relativer Höhe auf beiden Achsen
+  const kwhRange = kwhMax - kwhMin;
+  const kwhZeroRatio = kwhMin < 0 ? (-kwhMin) / kwhRange : 0;
+  let adjPriceMin = priceMin;
+  let adjPriceMax = priceMax;
+  if (kwhZeroRatio > 0 && priceMin < 0) {
+    const neededRange = (-priceMin) / kwhZeroRatio;
+    adjPriceMax = priceMin + neededRange;
+  } else if (kwhZeroRatio === 0) {
+    adjPriceMin = 0;
+  }
 
   return (
     <div>
@@ -1476,12 +1579,13 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
           <YAxis yAxisId="kwh" tick={{fill:'#6b7280',fontSize:9}}
             tickFormatter={v=>v===0?'0':`${Math.abs(v).toFixed(1)}`}
             label={{value:'kWh/h',angle:-90,position:'insideLeft',offset:14,fontSize:8,fill:'#9ca3af'}}
-            domain={[d=>Math.min(0,d-0.1), d=>Math.max(d*1.1,0.5)]}/>
+            domain={[kwhMin * 1.05, kwhMax * 1.1]}/>
 
-          {/* Rechte Y-Achse: Preis ct/kWh */}
+          {/* Rechte Y-Achse: Preis ct/kWh — gleicher Nullpunkt wie linke Achse, bei dyn. Tarif fixe Jahresskala */}
           <YAxis yAxisId="price" orientation="right"
             tick={{fill:'#6b7280',fontSize:9}} tickFormatter={v=>`${v.toFixed(0)}`}
-            label={{value:'ct/kWh',angle:90,position:'insideRight',offset:10,fontSize:8,fill:'#9ca3af'}}/>
+            label={{value:'ct/kWh',angle:90,position:'insideRight',offset:10,fontSize:8,fill:'#9ca3af'}}
+            domain={[adjPriceMin, adjPriceMax * 1.05]}/>
 
           <Tooltip
             contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:10,borderRadius:4}}
@@ -1498,6 +1602,10 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
               return [`${Number(v).toFixed(2)}`,n];
             }}
             labelFormatter={h=>`${h} Uhr`}/>
+
+          {/* Nulllinien — beide Achsen auf gleichem Niveau */}
+          <ReferenceLine yAxisId="kwh" y={0} stroke="#94a3b8" strokeWidth={1}/>
+          {(priceMin < 0) && <ReferenceLine yAxisId="price" y={0} stroke="#94a3b8" strokeDasharray="3 3" strokeWidth={1}/>}
 
           {/* Legend als separater Div oben */}
 
@@ -1541,11 +1649,11 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
               {/* SOC-Fläche, Farbe je nach Füllstand */}
               <defs>
                 <linearGradient id="socGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.4}/>
-                  <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.05}/>
+                  <stop offset="0%" stopColor="#68A2B9" stopOpacity={0.4}/>
+                  <stop offset="100%" stopColor="#68A2B9" stopOpacity={0.05}/>
                 </linearGradient>
               </defs>
-              <Area yAxisId="left" type="stepAfter" dataKey="soc" stroke="#22d3ee" strokeWidth={1.5}
+              <Area yAxisId="left" type="stepAfter" dataKey="soc" stroke="#68A2B9" strokeWidth={1.5}
                 fill="url(#socGrad)" name="SOC" dot={false}/>
               {/* 20%-Linie */}
               <Line yAxisId="left" type="stepAfter" dataKey={()=>maxSoc*0.2}
@@ -1559,10 +1667,11 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
       {/* Status-Info */}
       <div style={{fontSize:9.5,color:'#6b7280',marginTop:6,lineHeight:1.7,
                    background:'#f9fafb',padding:'6px 10px',borderRadius:4}}>
+        {isDyn && <span style={{color:'#68A2B9',marginRight:8}}>Preisachse: Jahresskala {yearEkMin.toFixed(0)}…{yearEkMax.toFixed(0)} ct/kWh (fix). </span>}
         {!state.speicherAktiv && <span style={{color:'#f59e0b'}}>⚡ Kein Speicher aktiv.</span>}
         {state.speicherAktiv && !isArb && (
           <span>Eigenverbrauch-Modus: Speicher entlädt sofort bei Bedarf.
-            <span style={{color:'#22d3ee'}}> → Arbitrage + dyn. Tarif aktivieren</span> für preisgesteuertes Netz-Laden.
+            <span style={{color:'#68A2B9'}}> → Arbitrage + dyn. Tarif aktivieren</span> für preisgesteuertes Netz-Laden.
           </span>
         )}
         {state.speicherAktiv && isArb && !isDyn && <span style={{color:'#f59e0b'}}>Arbitrage ohne dynamischen Tarif: kein Netz-Laden (Preisinformation fehlt).</span>}
@@ -1597,7 +1706,7 @@ function PanelOpt({state,upd,sim,isMobile,onOpt,optimizing,optResult,applyOpt}) 
         </div>
         <div style={S.card}>
           {!optResult&&!optimizing&&<div style={{padding:'40px 20px',textAlign:'center',color:'#6b7280',fontSize:12,lineHeight:1.7}}>Rahmen festlegen<br/>und Optimierung starten.</div>}
-          {optimizing&&<div style={{padding:'40px 20px',textAlign:'center',color:'#22d3ee',fontSize:12}}><div style={{fontSize:24,marginBottom:12}}>◐</div>Berechne…</div>}
+          {optimizing&&<div style={{padding:'40px 20px',textAlign:'center',color:'#68A2B9',fontSize:12}}><div style={{fontSize:24,marginBottom:12}}>◐</div>Berechne…</div>}
           {optResult&&!optimizing&&(<div>
             <div style={S.cardLabel}>Investition vs. Jahres-Ersparnis</div>
             <ResponsiveContainer width="100%" height={isMobile?260:340}>
@@ -1660,7 +1769,7 @@ function PanelErgebnis({sim,state,isMobile}) {
           <ComposedChart data={sim.monthly} margin={{top:10,right:10,left:-20,bottom:0}}>
             <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
             <XAxis dataKey="month" tick={{fill:'#6b7280',fontSize:10}}/><YAxis tick={{fill:'#6b7280',fontSize:10}}/>
-            <Tooltip content={({active,payload,label})=>{if(!active||!payload||!payload.length)return null;const d=payload[0].payload;return(<div style={{background:'#fff',border:'1px solid #e5e7eb',padding:'10px 12px',fontSize:11,lineHeight:1.6}}><div style={{color:'#22d3ee',marginBottom:4}}>{label}</div><div style={{color:'#fbbf24'}}>PV direkt: {d.direktPV} kWh</div><div style={{color:'#10b981'}}>Speicher: {d.speicher} kWh</div><div style={{color:'#3b82f6'}}>Netz: {d.netz} kWh</div><div style={{color:'#6b7280'}}>PV gesamt: {d.pv} kWh</div></div>);}}/>
+            <Tooltip content={({active,payload,label})=>{if(!active||!payload||!payload.length)return null;const d=payload[0].payload;return(<div style={{background:'#fff',border:'1px solid #e5e7eb',padding:'10px 12px',fontSize:11,lineHeight:1.6}}><div style={{color:'#68A2B9',marginBottom:4}}>{label}</div><div style={{color:'#fbbf24'}}>PV direkt: {d.direktPV} kWh</div><div style={{color:'#10b981'}}>Speicher: {d.speicher} kWh</div><div style={{color:'#3b82f6'}}>Netz: {d.netz} kWh</div><div style={{color:'#6b7280'}}>PV gesamt: {d.pv} kWh</div></div>);}}/>
             <Legend wrapperStyle={{fontSize:11}}/>
             <Bar dataKey="direktPV" stackId="v" fill="#fbbf24" name="PV direkt"/>
             <Bar dataKey="speicher" stackId="v" fill="#10b981" name="Speicher"/>
@@ -1740,7 +1849,7 @@ function runOpt(load, totalLoad, p, c) {
   const marginal=[];
   for(let i=1;i<pareto.length;i++){const pv=pareto[i-1],cv=pareto[i],dI=cv.totalInvest-pv.totalInvest,dC=cv.cashflow-pv.cashflow;marginal.push({totalInvest:cv.totalInvest,kwp:cv.kwp,battKWh:cv.battKWh,marginalROI:dI>0?dC/dI:0,cashflow:cv.cashflow,deltaInvest:dI,deltaCashflow:dC});}
   const strats=[
-    {id:'knee',label:'Bester Kompromiss',group:'pareto',color:'#22d3ee',shape:'diamond',cfg:kp,desc:'Sweet Spot zwischen Investition und Ertrag.',expl:'Kneedle-Algorithmus: Kniepunkt der Pareto-Front.'},
+    {id:'knee',label:'Bester Kompromiss',group:'pareto',color:'#68A2B9',shape:'diamond',cfg:kp,desc:'Sweet Spot zwischen Investition und Ertrag.',expl:'Kneedle-Algorithmus: Kniepunkt der Pareto-Front.'},
     {id:'sharpe',label:'Beste Effizienz',group:'pareto',color:'#fbbf24',shape:'triangle',cfg:sh,desc:'Bestes Verhältnis Mehrertrag/Mehraufwand.',expl:'Sharpe-Analog: (Cashflow - rf×Invest) / √Invest.'},
     {id:'elast',label:'Sicher investiert',group:'pareto',color:'#a78bfa',shape:'square',cfg:el,desc:'Stoppt wo Grenznutzen < 0.5.',expl:'Elastizitätsabfall in log-log-Darstellung.'},
     {id:'maxN',label:'Höchster Gewinn',group:'extrem',color:'#10b981',shape:'star',cfg:mxN.totalInvest>-Infinity?mxN:null,desc:'Max. absoluter Jahresgewinn.',expl:''},
@@ -1758,7 +1867,7 @@ function evalCfg(load, totalLoad, kwp, battKWh, p, pvShape, spot) {
   const pvA=kwp>0?pvI*annuity(p.zinssatz,p.pvLebensdauer):0;
   const spA=battKWh>0?spI*annuity(p.zinssatz,p.speicherLebensdauer):0;
   const bk=tI*p.betriebskostenAnteil;
-  const kO=calcStromkosten(load,spot,p.tarifModus,p.strompreis);
+  const kO=sum(load)*p.strompreis; // Baseline: Gesamtverbrauch × Festpreis
   const kM=calcStromkosten(res.gridImport,spot,p.tarifModus,p.strompreis);
   const eins=calcEinspeise(res.gridExport,pv,p.einspeiseverguetung,p.einspeiseModus||'fest');
   const ers=kO-(kM-eins),nErs=ers-pvA-spA-bk;
@@ -1880,14 +1989,14 @@ function Sl({label,value,min,max,step,unit,onChange,hint,decimals=0,display}) {
         {/* Full track */}
         <div style={{position:'absolute',top:9,left:0,right:0,height:4,background:'#e5e7eb'}}/>
         {/* Active portion */}
-        <div style={{position:'absolute',top:9,left:0,width:`${pct}%`,height:4,background:'#22d3ee'}}/>
+        <div style={{position:'absolute',top:9,left:0,width:`${pct}%`,height:4,background:'#68A2B9'}}/>
         {/* Centre marker */}
         <div style={{position:'absolute',top:4,left:'50%',transform:'translateX(-50%)',width:1,height:13,background:'#9ca3af'}}/>
         {/* Invisible range input on top */}
         <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(parseFloat(e.target.value))}
           style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',opacity:0,cursor:'pointer',margin:0,padding:0,zIndex:2}}/>
         {/* Visual thumb */}
-        <div style={{position:'absolute',top:'50%',left:`${pct}%`,transform:'translate(-50%,-50%)',width:16,height:16,background:'#22d3ee',pointerEvents:'none',zIndex:1}}/>
+        <div style={{position:'absolute',top:'50%',left:`${pct}%`,transform:'translate(-50%,-50%)',width:16,height:16,background:'#68A2B9',pointerEvents:'none',zIndex:1}}/>
       </div>
       {hint&&<div style={{fontSize:10,color:'#9ca3af',marginTop:2}}>{hint}</div>}
     </div>
@@ -1899,8 +2008,8 @@ function RangeSl({label,minVal,maxVal,min,max,step,unit,dec=0,onMin,onMax,hint})
   const pL=max>min?((minVal-min)/(max-min))*100:0;
   const pR=max>min?((maxVal-min)/(max-min))*100:0;
   const trackStyle=(pct)=>({
-    background:`linear-gradient(to right,#e5e7eb ${pct}%,#22d3ee ${pct}%)`,
-    accentColor:'#22d3ee',width:'100%',cursor:'pointer',
+    background:`linear-gradient(to right,#e5e7eb ${pct}%,#68A2B9 ${pct}%)`,
+    accentColor:'#68A2B9',width:'100%',cursor:'pointer',
   });
   return (
     <div style={{marginBottom:18}}>
@@ -1987,6 +2096,12 @@ function PanelLaufzeit({sim, state, isMobile}) {
   const npvFinal = rows[rows.length - 1]?.npv ?? 0;
   const cumFinal = rows[rows.length - 1]?.cumCash ?? 0;
 
+  // Jahr 0 als Startpunkt mit Initialinvestment
+  const rowsWithZero = [
+    { year: 0, ersparnis: 0, betrieb: 0, reinvest: 0, cashflow: -totalI, cumCash: -totalI, npv: -totalI },
+    ...rows
+  ];
+
   return (
     <div style={S.panel}>
       <SecTitle nr="06" title="20-Jahres-Business-Case" sub="Kapitalwert · IRR · Amortisation · Sensitivität · Degradation" isMobile={isMobile}/>
@@ -2011,28 +2126,30 @@ function PanelLaufzeit({sim, state, isMobile}) {
           ))}
         </div>
 
-        <div style={isMobile?S.gm:S.g2}>
           {/* ── Kumulierter Cashflow & NPV ───────────────────────────── */}
           <div style={S.card}>
             <div style={S.cardLabel}>Kumulierter Cashflow & NPV</div>
             <ResponsiveContainer width="100%" height={isMobile?220:280}>
-              <ComposedChart data={rows} margin={{top:10,right:10,left:-10,bottom:0}}>
+              <ComposedChart data={rowsWithZero} margin={{top:10,right:10,left:-10,bottom:0}}>
                 <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
                 <XAxis dataKey="year" tick={{fill:'#6b7280',fontSize:10}} label={{value:'Jahr',position:'insideBottom',offset:-2,fill:'#6b7280',fontSize:10}}/>
                 <YAxis tick={{fill:'#6b7280',fontSize:10}} tickFormatter={v=>`${(v/1000).toFixed(0)}k`}/>
                 <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}
-                  formatter={(v,n)=>[`${v.toLocaleString('de-DE')} €`, n]} labelFormatter={y=>`Jahr ${y}`}/>
+                  formatter={(v,n)=>[`${v.toLocaleString('de-DE')} €`, n]}
+                  labelFormatter={y=>y===0?`Jahr 0 · Initialinvestment -${totalI.toLocaleString('de-DE')} €`:`Jahr ${y}`}/>
                 <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="4 2"/>
+                <ReferenceLine x={0} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="4 2"
+                  label={{value:`-${(totalI/1000).toFixed(0)}k€`,position:'insideTopRight',fontSize:9,fill:'#ef4444'}}/>
                 {paybackYear && <ReferenceLine x={paybackYear} stroke="#10b981" strokeDasharray="4 2" label={{value:'Break-even',position:'top',fontSize:9,fill:'#10b981'}}/>}
                 {rows.some(r=>r.reinvest>0) && rows.filter(r=>r.reinvest>0).map(r=>(
                   <ReferenceLine key={r.year} x={r.year} stroke="#f59e0b" strokeDasharray="3 3" label={{value:'Batterie',position:'insideTopRight',fontSize:8,fill:'#f59e0b'}}/>
                 ))}
-                <Area type="monotone" dataKey="cumCash" fill="#22d3ee20" stroke="#22d3ee" strokeWidth={2} dot={false} name="Kum. Cashflow (nominal)"/>
+                <Area type="monotone" dataKey="cumCash" fill="#68A2B920" stroke="#68A2B9" strokeWidth={2} dot={false} name="Kum. Cashflow (nominal)"/>
                 <Line type="monotone" dataKey="npv" stroke="#a78bfa" strokeWidth={2} dot={false} name="NPV (diskontiert)"/>
               </ComposedChart>
             </ResponsiveContainer>
             <div style={{fontSize:10,color:'#9ca3af',marginTop:6}}>
-              Annahmen: PV-Degradation {(pvDeg*100).toFixed(1)}%/a · Batterie-Degradation {(battDeg*100).toFixed(1)}%/a · Strompreissteigerung +{(preisSteigerung*100).toFixed(0)}%/a · Diskont {(diskon*100).toFixed(1)}%
+              Jahr 0 = Initialinvestment ({totalI.toLocaleString('de-DE')} €). Annahmen: PV-Degradation {(pvDeg*100).toFixed(1)}%/a · Batterie-Degradation {(battDeg*100).toFixed(1)}%/a · Strompreissteigerung +{(preisSteigerung*100).toFixed(0)}%/a · Diskont {(diskon*100).toFixed(1)}%
               {spInvest > 0 && ` · Batterie-Reinvestition Jahr ${battReplaceYear} (~${Math.round(battReplaceKosten*0.85/1000)}k€)`}
             </div>
           </div>
@@ -2041,20 +2158,28 @@ function PanelLaufzeit({sim, state, isMobile}) {
           <div style={S.card}>
             <div style={S.cardLabel}>Jährlicher Cashflow</div>
             <ResponsiveContainer width="100%" height={isMobile?220:280}>
-              <BarChart data={rows} margin={{top:10,right:10,left:-10,bottom:0}}>
+              <BarChart data={rowsWithZero} margin={{top:10,right:10,left:-10,bottom:0}}>
                 <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
-                <XAxis dataKey="year" tick={{fill:'#6b7280',fontSize:10}}/>
+                <XAxis dataKey="year" tick={{fill:'#6b7280',fontSize:10}}
+                  tickFormatter={y=>y===0?'Init':String(y)}/>
                 <YAxis tick={{fill:'#6b7280',fontSize:10}} tickFormatter={v=>`${(v/1000).toFixed(1)}k`}/>
                 <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}
-                  formatter={(v,n)=>[`${v.toLocaleString('de-DE')} €`, n]} labelFormatter={y=>`Jahr ${y}`}/>
+                  formatter={(v,n)=>[`${v.toLocaleString('de-DE')} €`, n]}
+                  labelFormatter={y=>y===0?`Initialinvestment`:`Jahr ${y}`}/>
                 <ReferenceLine y={0} stroke="#9ca3af"/>
                 <Bar dataKey="ersparnis" fill="#10b981" name="Brutto-Ersparnis" radius={[2,2,0,0]}/>
-                <Bar dataKey="cashflow"  fill="#22d3ee" name="Netto-Cashflow" radius={[2,2,0,0]}/>
+                <Bar dataKey="cashflow"  fill="#68A2B9" name="Netto-Cashflow" radius={[2,2,0,0]}>
+                  {rowsWithZero.map((r,i)=>(
+                    <Cell key={i} fill={r.year===0?'#ef444466':r.cashflow>=0?'#68A2B9':'#ef4444'}/>
+                  ))}
+                </Bar>
                 <Bar dataKey="reinvest"  fill="#ef4444" name="Reinvestition"  radius={[2,2,0,0]}/>
               </BarChart>
             </ResponsiveContainer>
+            <div style={{fontSize:10,color:'#9ca3af',marginTop:4}}>
+              Jahr 0 = Initialinvestment -{totalI.toLocaleString('de-DE')} € (PV {pvInvest.toLocaleString('de-DE')} € + Speicher {spInvest.toLocaleString('de-DE')} €).
+            </div>
           </div>
-        </div>
 
         {/* ── NPV-Sensitivitätsanalyse ─────────────────────────────────── */}
         <div style={{...S.card,marginTop:16}}>
@@ -2117,7 +2242,7 @@ function Toggle({label,value,onChange}) {
   return (
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
       <span style={{color:'#111827',fontSize:14,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em'}}>{label}</span>
-      <button onClick={()=>onChange(!value)} style={{background:value?'#22d3ee':'#e5e7eb',border:'none',color:value?'#fff':'#4b5563',padding:'6px 14px',fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontWeight:700}}>{value?'AKTIV':'AUS'}</button>
+      <button onClick={()=>onChange(!value)} style={{background:value?'#68A2B9':'#e5e7eb',border:'none',color:value?'#fff':'#4b5563',padding:'6px 14px',fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontWeight:700}}>{value?'AKTIV':'AUS'}</button>
     </div>
   );
 }
@@ -2125,7 +2250,7 @@ function ModeSwitch({options,value,onChange,small}) {
   return (
     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:14}}>
       {options.map(o=>(
-        <button key={o.id} onClick={()=>onChange(o.id)} style={{padding:small?'5px 9px':'7px 13px',background:value===o.id?'#22d3ee':'transparent',border:value===o.id?'1px solid #22d3ee':'1px solid #e5e7eb',color:value===o.id?'#fff':'#4b5563',fontSize:small?10:11,cursor:'pointer',fontWeight:value===o.id?700:400}}>
+        <button key={o.id} onClick={()=>onChange(o.id)} style={{padding:small?'5px 9px':'7px 13px',background:value===o.id?'#68A2B9':'transparent',border:value===o.id?'1px solid #68A2B9':'1px solid #e5e7eb',color:value===o.id?'#fff':'#4b5563',fontSize:small?10:11,cursor:'pointer',fontWeight:value===o.id?700:400}}>
           {o.label}
         </button>
       ))}
@@ -2136,7 +2261,7 @@ function SecTitle({nr,title,sub,isMobile}) {
   return (
     <div style={{marginBottom:24}}>
       <div style={{display:'flex',alignItems:'baseline',gap:isMobile?10:16,flexWrap:'wrap'}}>
-        <span style={{color:'#22d3ee',fontSize:13,letterSpacing:'0.2em'}}>// {nr}</span>
+        <span style={{color:'#68A2B9',fontSize:13,letterSpacing:'0.2em'}}>// {nr}</span>
         <h2 style={{margin:0,fontSize:isMobile?18:26,color:'#111827',fontWeight:600,letterSpacing:'-0.02em'}}>{title}</h2>
       </div>
       {sub&&<div style={{color:'#6b7280',fontSize:12,marginTop:4,marginLeft:isMobile?0:38}}>{sub}</div>}
@@ -2218,28 +2343,28 @@ function aggHeatmap(series,ds=1){
 const S={
   container:{minHeight:'100vh',background:'#f9fafb',color:'#111827',fontFamily:'Arial,sans-serif'},
   header:{display:'flex',justifyContent:'space-between',marginBottom:28,paddingBottom:20,borderBottom:'1px solid #e5e7eb'},
-  headerLabel:{fontSize:13,color:'#22d3ee',letterSpacing:'0.3em',marginBottom:8},
+  headerLabel:{fontSize:13,color:'#68A2B9',letterSpacing:'0.3em',marginBottom:8},
   headerTitle:{margin:0,fontWeight:700,letterSpacing:'-0.03em',lineHeight:1,color:'#111827'},
   headerSub:{color:'#6b7280',fontSize:14,marginTop:8,letterSpacing:'0.05em'},
   resetBtn:{background:'transparent',border:'1px solid #e5e7eb',color:'#4b5563',padding:'8px 16px',fontSize:12,letterSpacing:'0.15em',cursor:'pointer',alignSelf:'flex-start'},
   tabNav:{display:'flex',gap:4,marginBottom:24,borderBottom:'1px solid #e5e7eb'},
   tabBtn:{background:'transparent',border:'none',color:'#6b7280',fontSize:12,letterSpacing:'0.1em',cursor:'pointer',borderBottom:'2px solid transparent'},
-  tabBtnActive:{color:'#22d3ee',borderBottom:'2px solid #22d3ee'},
+  tabBtnActive:{color:'#68A2B9',borderBottom:'2px solid #68A2B9'},
   panel:{animation:'fadeIn 0.3s ease-out'},
   g2:{display:'grid',gridTemplateColumns:'1fr 1.4fr',gap:24},
   gm:{display:'flex',flexDirection:'column',gap:16},
   card:{background:'#fff',border:'1px solid #e5e7eb',padding:20},
   cardLabel:{fontSize:13,color:'#6b7280',letterSpacing:'0.15em',textTransform:'uppercase',marginBottom:16},
-  totalRow:{display:'flex',justifyContent:'space-between',paddingTop:14,marginTop:14,borderTop:'1px solid #e5e7eb',fontSize:14,color:'#22d3ee',textTransform:'uppercase',letterSpacing:'0.1em'},
+  totalRow:{display:'flex',justifyContent:'space-between',paddingTop:14,marginTop:14,borderTop:'1px solid #e5e7eb',fontSize:14,color:'#68A2B9',textTransform:'uppercase',letterSpacing:'0.1em'},
   infoRow:{display:'flex',justifyContent:'space-between',padding:'8px 0',fontSize:14,color:'#4b5563'},
   infoBox:{background:'#ecfeff',border:'1px solid #a5f3fc',padding:'12px 14px',marginBottom:16},
   rAbs:{position:'absolute',top:0,left:0,right:0,width:'100%',height:24,background:'transparent',pointerEvents:'none',appearance:'none',WebkitAppearance:'none',margin:0,padding:0},
   summaryGrid:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4},
   footer:{display:'flex',justifyContent:'space-between',marginTop:32,paddingTop:16,borderTop:'1px solid #e5e7eb',color:'#9ca3af',letterSpacing:'0.1em',textTransform:'uppercase'},
-  optBtn:{width:'100%',background:'#22d3ee',border:'none',color:'#fff',padding:'14px 20px',fontSize:12,letterSpacing:'0.2em',cursor:'pointer',fontWeight:700},
+  optBtn:{width:'100%',background:'#68A2B9',border:'none',color:'#fff',padding:'14px 20px',fontSize:12,letterSpacing:'0.2em',cursor:'pointer',fontWeight:700},
   applyBtn:{background:'transparent',border:'1px solid',padding:'6px 12px',fontSize:10,letterSpacing:'0.15em',cursor:'pointer',fontWeight:700},
   modeBtn:{padding:'7px 12px',background:'transparent',border:'1px solid #e5e7eb',color:'#4b5563',fontSize:11,cursor:'pointer',fontWeight:400},
-  modeBtnActive:{background:'#22d3ee',border:'1px solid #22d3ee',color:'#fff',fontWeight:700},
+  modeBtnActive:{background:'#68A2B9',border:'1px solid #68A2B9',color:'#fff',fontWeight:700},
 };
 
 const CSS=`
