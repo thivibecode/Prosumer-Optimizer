@@ -2492,6 +2492,7 @@ function runSimForState(snap) {
       totalLoad:tL,totalPV:tPV,eigenverbrauch:ev2,
       ersparnis:ers,pvInvest:pvI,speicherInvest:spI,
       pvAnnuity:pvA,speicherAnnuity:spA,betriebskosten:bk,
+      stromkostenMitPV:kMit,einspeiseErloes:eins,
       lcoeEigenverbrauch:ev2>0?(pvA+spA+bk)/ev2:0,
       avgDynPrice:snap.tarifModus==='dynamisch'&&tIm>0?kMit/tIm:null,
     };
@@ -2841,15 +2842,28 @@ function PanelVergleich({snapshots,currentSim,currentState,isMobile}) {
               {[
                 {key:'autarkie',label:'Autarkie',tip:'Anteil des Eigenbedarfs der ohne Netzbezug gedeckt wird. 100% = vollständige Unabhängigkeit.',fmt:v=>`${(v*100).toFixed(1)} %`,bestMax:true},
                 {key:'eigenverbrauchsquote',label:'Eigenverbrauch',tip:'Anteil der PV-Erzeugung der direkt oder via Speicher selbst verbraucht wird. Rest wird eingespeist.',fmt:v=>`${(v*100).toFixed(1)} %`,bestMax:true},
-                {key:'nettoErsparnis',label:'Ersparnis/Jahr',tip:'Jährliche Netto-Ersparnis nach Abzug von Kapitalkosten (Annuität) und Betriebskosten.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:true},
-                {key:'roi',label:'ROI',tip:'Return on Investment: Netto-Ersparnis / Gesamtinvestition. Gibt an wie viel Prozent der Investition jährlich zurückfließen.',fmt:v=>v!==null?`${(v*100).toFixed(1)} %`:'-',bestMax:true,fromSlot:true},
                 {key:'totalImport',label:'Netzbezug',tip:'Jährlicher Strombezug aus dem Netz in kWh.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:false},
                 {key:'totalExport',label:'Einspeisung',tip:'Jährlich ins Netz eingespeiste PV-Überschussenergie in kWh.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:true},
                 {key:'lcoeEigenverbrauch',label:'LCOE',tip:'Levelized Cost of Energy: Vollkosten des selbst erzeugten Stroms in ct/kWh (Invest + Betrieb / Eigenverbrauch).',fmt:v=>`${(v*100).toFixed(1)} ct`,bestMax:false},
                 {key:'amortisation',label:'Amortisation',tip:'Statische Amortisationszeit: Investition / jährlicher Cash-Flow (Ersparnis minus Betriebskosten).',fmt:v=>isFinite(v)?`${v.toFixed(1)} a`:'-',bestMax:false},
                 {key:'totalInvest',label:'Investition',tip:'Gesamtinvestition in PV-Anlage und Batteriespeicher.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:false},
-              ].map(kpi=>{
+                {divider:true,label:'Wirtschaftlichkeit'},
+                {key:'stromkostenNetto',label:'Stromkosten/Jahr',tip:'Tatsächliche Netto-Stromkosten nach PV: Bezugskosten minus Einspeiseerlös.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:false,
+                  calc:g=>Math.max(0,(g.sim.stromkostenMitPV||0)-(g.sim.einspeiseErloes||0))},
+                {key:'anlagekosten',label:'Anlagekosten/Jahr',tip:'Jährliche Kapitalkosten (Annuität PV + Speicher) plus Betriebskosten.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:false,
+                  calc:g=>(g.sim.pvAnnuity||0)+(g.sim.speicherAnnuity||0)+(g.sim.betriebskosten||0)},
+                {key:'nettoErsparnis',label:'Ersparnis/Jahr',tip:'Netto-Ersparnis: Brutto-Ersparnis (Stromkostensenkung + Einspeiseerlös) abzgl. Anlagekosten/Jahr.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:true},
+                {key:'roi',label:'ROI',tip:'Return on Investment: Netto-Ersparnis / Gesamtinvestition. Gibt an wie viel Prozent der Investition jährlich zurückfließen.',fmt:v=>v!==null?`${(v*100).toFixed(1)} %`:'-',bestMax:true,fromSlot:true},
+              ].map((kpi,kpiIdx)=>{
+                if(kpi.divider) return(
+                  <tr key={kpi.label}>
+                    <td colSpan={slotGroups.length+1} style={{padding:'10px 10px 4px',fontSize:9,fontWeight:700,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',borderTop:'2px solid #e5e7eb',background:'#f9fafb'}}>
+                      {kpi.label}
+                    </td>
+                  </tr>
+                );
                 const vals=slotGroups.map(g=>{
+                  if(kpi.calc) return kpi.calc(g);
                   const v=kpi.fromSlot?g.roi:g.sim[kpi.key];
                   return typeof v==='number'?v:NaN;
                 });
