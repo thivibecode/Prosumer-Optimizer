@@ -892,12 +892,24 @@ export default function ProsumerTool() {
   const [activeTab,setActiveTab]=useState('verbrauch');
   const [optimizing,setOptimizing]=useState(false);
   const [optResult,setOptResult]=useState(null);
+  const [snapshots,setSnapshots]=useState([null,null,null]);
+  const saveSnapshot=(idx)=>setSnapshots(s=>{const n=[...s];n[idx]={...state};return n;});
+  const loadSnapshot=(idx)=>{if(snapshots[idx])setState({...DEF,...snapshots[idx]});};
+  // Long-press refs (kein Hook, direkt als Objekt)
+  const lpTimers=React.useRef([null,null,null]);
+  const makeLongPress=(idx)=>({
+    onMouseDown:()=>{lpTimers.current[idx]=setTimeout(()=>loadSnapshot(idx),600);},
+    onMouseUp:()=>clearTimeout(lpTimers.current[idx]),
+    onMouseLeave:()=>clearTimeout(lpTimers.current[idx]),
+    onTouchStart:(e)=>{e.preventDefault();lpTimers.current[idx]=setTimeout(()=>loadSnapshot(idx),600);},
+    onTouchEnd:()=>clearTimeout(lpTimers.current[idx]),
+  });
   const {isMobile}=useViewport();
 
   useEffect(()=>{try{const s=localStorage.getItem(STORAGE_KEY);if(s){const p=JSON.parse(s);const{warmwasserKWh,...r}=p;setState({...DEF,...r});}}catch(e){}setLoaded(true);},[]);
   useEffect(()=>{if(!loaded)return;const t=setTimeout(()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify(state));}catch(e){}},500);return()=>clearTimeout(t);},[state,loaded]);
   const upd=(k,v)=>setState(s=>({...s,[k]:v}));
-  const reset=()=>{setState(DEF);setOptResult(null);};
+  const reset=()=>{setState(DEF);setOptResult(null);setSnapshots([null,null,null]);};
 
   const sim=useMemo(()=>{
     const sd=state.weatherSeed||42;
@@ -995,6 +1007,7 @@ export default function ProsumerTool() {
       heatmapLoad:aggHeatmap(load,ds),heatmapPV:aggHeatmap(pv,ds),heatmapImport:aggHeatmap(res.gridImport,ds),heatmapBattery:aggHeatmap(res.soc,ds),
       spot,spotMin,spotMax,heatmapSpot:aggHeatmapSpot(spot,5),
       resSoc:res.soc,resBc:res.batteryCharge,resBd:res.batteryDischarge,resPv:pv,resLoad:load,resGi:res.gridImport,resGe:res.gridExport,
+      gridImport:res.gridImport,
       hemsBaseline,
     };
   },[state]);
@@ -1020,13 +1033,61 @@ export default function ProsumerTool() {
           <h1 style={{...S.headerTitle,fontSize:isMobile?28:42}}>Prosumer&shy;-Optimizer</h1>
           <div style={S.headerSub}>PV · Speicher · Dynamischer Tarif · Wirtschaftlichkeit</div>
         </div>
-        <button onClick={reset} style={S.resetBtn}>Reset</button>
+        <div style={{display:'flex',gap:6,alignItems:'flex-start',flexWrap:'wrap'}}>
+          {['S1','S2','S3'].map((lbl,i)=>{
+            const snap=snapshots[i];
+            const SNAP_COLORS=['#f97316','#8b5cf6','#10b981'];
+            const col=SNAP_COLORS[i];
+            const btnBase={
+              textAlign:'left',width:140,minHeight:52,padding:'6px 10px',
+              cursor:'pointer',position:'relative',border:`1px solid`,
+            };
+            if(!snap) return(
+              <button key={i} onClick={()=>saveSnapshot(i)} title={`${lbl} speichern`}
+                style={{...btnBase,borderColor:'#e5e7eb',background:'#f9fafb',color:'#9ca3af'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#9ca3af'}}>{lbl}</div>
+                <div style={{fontSize:9,color:'#d1d5db',marginTop:2}}>Speichern</div>
+              </button>
+            );
+            const isDynSnap=snap.tarifModus==='dynamisch';
+            const preisLabel=isDynSnap?'Dyn. Tarif':`${(snap.strompreis*100).toFixed(0)} ct Festpreis`;
+            const fTags=[];
+            if(snap.pvAktiv) fTags.push(`${snap.pvKWp} kWp PV`);
+            if(snap.speicherAktiv) fTags.push(`${snap.speicherKWh} kWh Sp.`);
+            if(snap.batterieStrategie==='arbitrage'&&snap.speicherAktiv) fTags.push('Arb.');
+            if(snap.hemsAktiv){
+              const hm=[];
+              if(snap.hemsEvAktiv&&snap.evKWh>0) hm.push('EV');
+              if(snap.hemsWpAktiv&&snap.waermeKWh>0) hm.push('WP');
+              if(hm.length>0) fTags.push(`HEMS(${hm.join('+')})`);
+            }
+            return(
+              <button key={i} onClick={()=>saveSnapshot(i)}
+                title={`Klick: ${lbl} überschreiben · Lang halten: ${lbl} laden`}
+                {...makeLongPress(i)}
+                style={{...btnBase,borderColor:col,background:`${col}0d`,color:col,userSelect:'none'}}>
+                <div style={{fontSize:11,fontWeight:700,color:col,marginBottom:2,display:'flex',alignItems:'center',gap:4}}>
+                  {lbl}
+                  <span style={{fontSize:7,color:`${col}80`,fontWeight:400}}>↩ halten</span>
+                </div>
+                <div style={{fontSize:9,color:'#6b7280',marginBottom:fTags.length?2:0}}>{preisLabel}</div>
+                {fTags.length>0&&<div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+                  {fTags.map((t,j)=>(
+                    <span key={j} style={{fontSize:8,padding:'0px 4px',background:`${col}20`,border:`1px solid ${col}40`,color:col,fontWeight:600}}>{t}</span>
+                  ))}
+                </div>}
+                <span style={{position:'absolute',top:3,right:3,width:5,height:5,borderRadius:'50%',background:col}}/>
+              </button>
+            );
+          })}
+          <button onClick={reset} style={{...S.resetBtn,width:140,minHeight:52,alignSelf:'stretch',display:'flex',alignItems:'center',justifyContent:'center'}}>Reset</button>
+        </div>
       </header>
 
       <KpiBar sim={sim} isMobile={isMobile} state={state}/>
 
       <nav style={{...S.tabNav,overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-        {[{id:'verbrauch',l:isMobile?'01':'01 · Verbrauch'},{id:'erzeugung',l:isMobile?'02':'02 · Erzeugung'},{id:'tarif',l:isMobile?'03 ⚡':'03 · Marktanbindung'},{id:'optimierer',l:isMobile?'04 ★':'04 · Optimierer'},{id:'ergebnis',l:isMobile?'05':'05 · Ergebnis'},{id:'laufzeit',l:isMobile?'06 ∿':'06 · 20-Jahres-Sicht'}].map(t=>(
+        {[{id:'verbrauch',l:isMobile?'01':'01 · Verbrauch'},{id:'erzeugung',l:isMobile?'02':'02 · Erzeugung'},{id:'tarif',l:isMobile?'03 ⚡':'03 · Marktanbindung'},{id:'optimierer',l:isMobile?'04 ★':'04 · Optimierer'},{id:'ergebnis',l:isMobile?'05':'05 · Ergebnis'},{id:'vergleich',l:isMobile?'06 ⇌':'06 · Vergleich'}].map(t=>(
           <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{...S.tabBtn,...(activeTab===t.id?S.tabBtnActive:{}),padding:isMobile?'12px 14px':'12px 20px',whiteSpace:'nowrap'}}>{t.l}</button>
         ))}
       </nav>
@@ -1034,10 +1095,11 @@ export default function ProsumerTool() {
       <main>
         {activeTab==='verbrauch'  && <PanelVerbrauch  state={state} upd={upd} sim={sim} isMobile={isMobile}/>}
         {activeTab==='erzeugung'  && <PanelErzeugung  state={state} upd={upd} sim={sim} isMobile={isMobile}/>}
-        {activeTab==='tarif'      && <PanelTarif      state={state} upd={upd} sim={sim} isMobile={isMobile}/>}
+        {activeTab==='tarif'      && <PanelTarif      state={state} upd={upd} sim={sim} isMobile={isMobile} setActiveTab={setActiveTab}/>}
         {activeTab==='optimierer' && <PanelOpt        state={state} upd={upd} sim={sim} isMobile={isMobile} onOpt={handleOpt} optimizing={optimizing} optResult={optResult} applyOpt={applyOpt}/>}
         {activeTab==='ergebnis'   && <PanelErgebnis   sim={sim} state={state} isMobile={isMobile}/>}
         {activeTab==='laufzeit'   && <PanelLaufzeit   sim={sim} state={state} isMobile={isMobile}/>}
+        {activeTab==='vergleich'  && <PanelVergleich  snapshots={snapshots} currentSim={sim} currentState={state} isMobile={isMobile}/>}
       </main>
 
       <footer style={{...S.footer,flexDirection:isMobile?'column':'row',gap:isMobile?6:0,fontSize:9}}>
@@ -1184,7 +1246,7 @@ function PanelErzeugung({state,upd,sim,isMobile}) {
   );
 }
 
-function PanelTarif({state,upd,sim,isMobile}) {
+function PanelTarif({state,upd,sim,isMobile,setActiveTab}) {
   const isDyn=state.tarifModus==='dynamisch';
   const isArb=state.batterieStrategie==='arbitrage';
   const [dayIdx, setDayIdx] = React.useState(196);
@@ -1332,7 +1394,7 @@ function PanelTarif({state,upd,sim,isMobile}) {
 
       {/* ZEILE 3: Tag-Slider + zwei Charts nebeneinander (Desktop) */}
       <div style={{...S.card,marginBottom:0}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4,gap:16}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4,gap:16,flexWrap:'wrap'}}>
           <div style={{...S.cardLabel,marginBottom:0}}>Tagesanalyse</div>
           <div style={{flex:1,maxWidth:400}}>{daySlider}</div>
         </div>
@@ -1347,32 +1409,37 @@ function PanelTarif({state,upd,sim,isMobile}) {
             const hb = sim.hemsBaseline;
             const hasEV = state.evKWh > 0;
             const hasWP = state.waermeKWh > 0;
+            const showEV = state.hemsEvAktiv && hasEV;
+            const showWP = state.hemsWpAktiv && hasWP;
+            // Wenn nichts aktiv ist, nichts rendern
+            if(!showEV && !showWP) return null;
             const i0 = dayIdx * 24;
             const dayProfile = Array.from({length:24}, (_,h) => ({
               h,
-              evBase:  hb.evProfileBase[i0+h]||0, evHems:  hb.evProfile[i0+h]||0,
-              wpBase:  hb.wpProfileBase[i0+h]||0, wpHems:  hb.wpProfile[i0+h]||0,
+              evBase:  showEV?hb.evProfileBase[i0+h]||0:0, evHems:  showEV?hb.evProfile[i0+h]||0:0,
+              wpBase:  showWP?hb.wpProfileBase[i0+h]||0:0, wpHems:  showWP?hb.wpProfile[i0+h]||0:0,
               evbBase: hb.eigenverbrauchBase[i0+h]||0, evbHems: hb.eigenverbrauchHems[i0+h]||0,
               pv: sim.resPv?sim.resPv[i0+h]||0:0,
               spot: sim.spot?sim.spot[i0+h]||0:0,
             }));
-            const showEV = state.hemsEvAktiv && hasEV;
-            const showWP = state.hemsWpAktiv && hasWP;
-            // Skalierung: Nullpunkt beider Achsen angleichen
-            const maxKwh = Math.max(...dayProfile.map(d=>Math.max(d.pv,d.evbBase,d.evbHems,d.evBase||0,d.evHems||0,d.wpBase||0,d.wpHems||0,0.1)));
+            const maxKwh = Math.max(...dayProfile.map(d=>Math.max(d.pv,d.evbBase,d.evbHems,showEV?d.evBase:0,showEV?d.evHems:0,showWP?d.wpBase:0,showWP?d.wpHems:0,0.1)));
             const spotVals = dayProfile.map(d=>d.spot);
             const spotMin = Math.min(...spotVals);
             const spotMax = Math.max(...spotVals);
-            // Gleicher Nullpunkt: kwhRange/spotRange so dass 0 auf gleicher Höhe
             const kwhLow = 0, kwhHigh = maxKwh * 1.15;
-            const kwhRange = kwhHigh - kwhLow;
-            // 0 soll bei gleichem Anteil auf der Achse liegen: anteil = (0 - kwhLow)/kwhRange = kwhLow/kwhRange = 0 → passt schon da kwhLow=0
-            // Für Spot: 0 soll auch bei Anteil 0 liegen (unterer Rand), daher min = min(spotMin,0), range = spotMax - min
             const priceMin = Math.min(spotMin, 0);
             const priceMax = spotMax * 1.1;
+            // Klammerinfo für HEMS-Titel
+            const hemsModeParts=[];
+            if(showEV) hemsModeParts.push('EV');
+            if(showWP) hemsModeParts.push('WP');
+            const hemsModeStr=hemsModeParts.join(' + ');
             return (
               <div>
-                <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:8}}>HEMS · Eigenverbrauch Vorher vs. Nachher</div>
+                <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:8}}>
+                  HEMS · Eigenverbrauch Vorher vs. Nachher
+                  <span style={{color:'#68A2B9',fontWeight:700,letterSpacing:0,textTransform:'none',fontSize:10}}> ({hemsModeStr})</span>
+                </div>
                 <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:6,fontSize:9}}>
                   <span style={{color:'#fbbf24'}}>▒ PV</span>
                   <span style={{color:'#f97316',fontWeight:600}}>- - Eigenverbr. Basis</span>
@@ -1403,14 +1470,14 @@ function PanelTarif({state,upd,sim,isMobile}) {
                   </ComposedChart>
                 </ResponsiveContainer>
 
-                {/* Separate Sub-Charts für EV und WP Verschiebung */}
+                {/* Sub-Charts EV / WP — nur aktive anzeigen */}
                 {(showEV || showWP) && (() => {
-                  const evMax = Math.max(0.05, ...dayProfile.map(d => Math.max(d.evBase||0, d.evHems||0)));
-                  const wpMax = Math.max(0.05, ...dayProfile.map(d => Math.max(d.wpBase||0, d.wpHems||0)));
+                  const evMax = showEV?Math.max(0.05,...dayProfile.map(d=>Math.max(d.evBase,d.evHems))):0;
+                  const wpMax = showWP?Math.max(0.05,...dayProfile.map(d=>Math.max(d.wpBase,d.wpHems))):0;
                   return (
                     <div style={{marginTop:10,borderTop:'1px solid #f3f4f6',paddingTop:8}}>
                       <div style={{fontSize:9,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>
-                        Last-Verschiebung · Vorher (gestrichelt) vs. Nachher (durchgezogen)
+                        Last-Verschiebung · Vorher (gestrichelt) vs. Nachher ({hemsModeStr})
                       </div>
                       <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:4,fontSize:9}}>
                         {showEV&&<><span style={{color:'#a78bfa',fontWeight:600}}>- - EV Basis</span><span style={{color:'#7c3aed',fontWeight:600}}>— EV HEMS</span></>}
@@ -1443,13 +1510,12 @@ function PanelTarif({state,upd,sim,isMobile}) {
                         </ComposedChart>
                       </ResponsiveContainer>
                       <div style={{fontSize:9,color:'#9ca3af',marginTop:2}}>
-                        Abstand zwischen Basis- und HEMS-Linie = verschobene Last. PV-Fläche im Hintergrund zeigt Erzeugungsfenster.
+                        Abstand zwischen Basis- und HEMS-Linie = verschobene Last. PV-Fläche zeigt Erzeugungsfenster.
                       </div>
                     </div>
                   );
                 })()}
-
-                <div style={{fontSize:10,color:'#9ca3af',marginTop:6}}>Fläche zwischen Eigenverbrauchslinien = HEMS-Mehrnutzung. Negative Börsenpreise sichtbar unter der Nulllinie.</div>
+                <div style={{fontSize:10,color:'#9ca3af',marginTop:6}}>Fläche zwischen Eigenverbrauchslinien = HEMS-Mehrnutzung.</div>
               </div>
             );
           })()}
@@ -1541,7 +1607,7 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
 
   const dayEkMax = isDyn ? Math.max(...dayData.map(d => d.ek)) : state.strompreis * 100;
   const priceMin = isDyn ? Math.min(Math.max(yearEkMin, -15), 0) : 0;
-  const priceMax = isDyn ? Math.max(dayEkMax * 1.1, 5) : ...
+  const priceMax = isDyn ? Math.min(Math.max(dayEkMax, 60), 100) : state.strompreis * 100 * 1.2;
 
   // Nullpunkt-Synchronisation: 0-Linie auf gleicher relativer Höhe auf beiden Achsen
   const kwhRange = kwhMax - kwhMin;
@@ -1559,11 +1625,12 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
     <div>
       {/* Legende */}
       <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:8,fontSize:9.5,lineHeight:1.8}}>
-        <span style={{color:'#3b82f6',fontWeight:600}}>▮ Netz → Last</span>
-        {hasNL && <span style={{color:'#10b981',fontWeight:600}}>▮ Netz → Speicher</span>}
-        {hasStorage && <span style={{color:'#f59e0b',fontWeight:600}}>▮ Speicher → Last</span>}
-        {hasEinsp && <span style={{color:'#9ca3af',fontWeight:600}}>▮ PV → Netz</span>}
-        {hasPV && <span style={{color:'#fbbf24'}}>- - PV-Direktverbrauch</span>}
+        <span style={{color:'#f59e0b',fontWeight:600}}>▮ PV→Direkt</span>
+        {hasPVSpeich && <span style={{color:'#84cc16',fontWeight:600}}>▮ PV→Speicher</span>}
+        {hasStorage && <span style={{color:'#06b6d4',fontWeight:600}}>▮ Speicher→Last</span>}
+        <span style={{color:'#6366f1',fontWeight:600}}>▮ Netz→Last</span>
+        {hasNL && <span style={{color:'#10b981',fontWeight:600}}>▮ Netz→Speicher</span>}
+        {hasEinsp && <span style={{color:'#9ca3af'}}>▮ PV→Netz</span>}
         <span style={{color:'#ef4444'}}>- - Festpreis</span>
         {isDyn && <span style={{color:'#ec4899',fontWeight:600}}>— Dyn. Tarif</span>}
       </div>
@@ -1611,13 +1678,13 @@ function StrategyDayChart({sim, state, isMobile, dayIdx}) {
           {/* Legend als separater Div oben */}
 
           {/* Gestapelte Balken: Energieflüsse — alle positiv stackId="a", Einspeisung stackId="b" */}
-          <Bar yAxisId="kwh" dataKey="pvDirekt"   name="PV→Direkt"     stackId="a" fill="#fbbf24" fillOpacity={0.90}/>
-          {hasPVSpeich && <Bar yAxisId="kwh" dataKey="pvSpeich" name="PV→Speicher" stackId="a" fill="#86efac" fillOpacity={0.90}/>}
-          <Bar yAxisId="kwh" dataKey="entladen"   name="Speicher→Last" stackId="a" fill="#a78bfa" fillOpacity={0.90}/>
-          <Bar yAxisId="kwh" dataKey="netzLast"   name="Netz→Last"     stackId="a" fill="#3b82f6" fillOpacity={0.85}/>
+          <Bar yAxisId="kwh" dataKey="pvDirekt"   name="PV→Direkt"     stackId="a" fill="#f59e0b" fillOpacity={0.90}/>
+          {hasPVSpeich && <Bar yAxisId="kwh" dataKey="pvSpeich" name="PV→Speicher" stackId="a" fill="#84cc16" fillOpacity={0.90}/>}
+          <Bar yAxisId="kwh" dataKey="entladen"   name="Speicher→Last" stackId="a" fill="#06b6d4" fillOpacity={0.90}/>
+          <Bar yAxisId="kwh" dataKey="netzLast"   name="Netz→Last"     stackId="a" fill="#6366f1" fillOpacity={0.85}/>
           <Bar yAxisId="kwh" dataKey="netzSpeich" name="Netz→Speicher" stackId="a" fill="#10b981" fillOpacity={0.85}/>
           {/* Einspeisung nach unten */}
-          <Bar yAxisId="kwh" dataKey="einspeis"   name="PV→Netz"       stackId="b" fill="#9ca3af" fillOpacity={0.7}/>
+          <Bar yAxisId="kwh" dataKey="einspeis"   name="PV→Netz"       stackId="b" fill="#d1d5db" fillOpacity={0.85}/>
 
           {/* Preislinien: Festpreis rot gestrichelt, dyn. EK-Preis pink */}
           <Line yAxisId="price" type="stepAfter" dataKey="fest"
@@ -2373,3 +2440,588 @@ const CSS=`
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 button:hover{opacity:0.85;}button:disabled{opacity:0.4;cursor:not-allowed;}
 `;
+
+// ============================================================
+// SNAPSHOT-HILFSFUNKTION
+// ============================================================
+function runSimForState(snap) {
+  if(!snap) return null;
+  try {
+    const sd=snap.weatherSeed||42;
+    const hR=mkRng(sd),wR=mkRng(sd+1),eR=mkRng(sd+3),pR=mkRng(sd+4);
+    const haushalt=genBdewLoad(snap.haushaltKWh,hR);
+    const waerme=genSubLoad(SUB_PROFILES.waerme,snap.waermeKWh,wR,0.20);
+    const ev=genSubLoad(SUB_PROFILES.ev,snap.evKWh,eR,0.15);
+    const pvAnn=snap.pvAktiv?snap.pvKWp*snap.pvSpezErtrag:0;
+    const pv=snap.pvAktiv?genPV(pvAnn,pR):new Array(8760).fill(0);
+    const spotScale=snap.spotScale||1.0;
+    const spot=EPEX_2025_CT.map(p=>p*spotScale);
+    let evFinal=ev,waermeFinal=waerme;
+    if(snap.hemsAktiv){
+      if(snap.hemsEvAktiv&&snap.evKWh>0) evFinal=calcHemsEV(pv,spot,ev,{abfahrt:snap.hemsAbfahrt||7,ladeleistung:snap.hemsLadeleistung||7.4,strategie:snap.hemsStrategie||'hybrid'});
+      if(snap.hemsWpAktiv&&snap.waermeKWh>0) waermeFinal=calcHemsWP(pv,spot,waerme,snap.hemsWpFlex||20);
+    }
+    const load=haushalt.map((v,i)=>v+waermeFinal[i]+evFinal[i]);
+    const battKWh=snap.speicherAktiv?snap.speicherKWh:0;
+    const res=simulate(load,pv,battKWh,spot,snap.batterieStrategie,snap.tarifModus);
+    const tL=sum(load),tPV=sum(pv),tIm=sum(res.gridImport),tEx=sum(res.gridExport);
+    const ev2=tPV-tEx,aut=tL>0?(tL-tIm)/tL:0,evq=tPV>0?ev2/tPV:0;
+    const pvI=snap.pvAktiv?snap.pvKWp*snap.pvKostenProKWp:0;
+    const spI=snap.speicherAktiv?snap.speicherKWh*snap.speicherKostenProKWh:0;
+    const tI=pvI+spI;
+    const pvA=pvI>0?pvI*annuity(snap.zinssatz,snap.pvLebensdauer):0;
+    const spA=spI>0?spI*annuity(snap.zinssatz,snap.speicherLebensdauer):0;
+    const bk=tI*snap.betriebskostenAnteil;
+    const kOhne=sum(load)*snap.strompreis;
+    const kMit=calcStromkosten(res.gridImport,spot,snap.tarifModus,snap.strompreis);
+    const eins=calcEinspeise(res.gridExport,pv,snap.einspeiseverguetung,snap.einspeiseModus||'fest');
+    const ers=kOhne-(kMit-eins);
+    const nErs=ers-pvA-spA-bk;
+    const cfYear=ers-bk;
+    const amort=cfYear>0?tI/cfYear:Infinity;
+    const monthly=aggMonthly({load,pv,gridImport:res.gridImport,gridExport:res.gridExport,batteryDischarge:res.batteryDischarge});
+    // Normales JS-Array sicherstellen (kein typed array)
+    const gridImportArr=Array.from(res.gridImport);
+    const spotArr=Array.from(spot);
+    const pvArr=Array.from(pv);
+    const socArr=Array.from(res.soc);
+    return {
+      autarkie:aut,eigenverbrauchsquote:evq,nettoErsparnis:nErs,
+      totalImport:tIm,totalExport:tEx,amortisation:amort,totalInvest:tI,
+      monthly,spot:spotArr,gridImport:gridImportArr,pv:pvArr,resSoc:socArr,
+      totalLoad:tL,totalPV:tPV,eigenverbrauch:ev2,
+      ersparnis:ers,pvInvest:pvI,speicherInvest:spI,
+      pvAnnuity:pvA,speicherAnnuity:spA,betriebskosten:bk,
+      lcoeEigenverbrauch:ev2>0?(pvA+spA+bk)/ev2:0,
+      avgDynPrice:snap.tarifModus==='dynamisch'&&tIm>0?kMit/tIm:null,
+    };
+  } catch(e) { console.error('runSimForState error',e); return null; }
+}
+
+// ============================================================
+// HEATMAP-KOMPONENTE FÜR VERGLEICH (Netzbezug, vereinfacht)
+// ============================================================
+function HeatmapImportSmall({data,color,title}) {
+  if(!data||!data.length) return null;
+  const vals=data.map(d=>d.value);
+  const maxV=Math.max(...vals,0.01);
+  const W=Math.floor(365/5); // 73 Spalten
+  const H=24;
+  const cw=3,ch=6;
+  return(
+    <div>
+      <div style={{fontSize:9,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>{title}</div>
+      <svg width={W*cw} height={H*ch} style={{display:'block'}}>
+        {data.map((d,i)=>{
+          const t=Math.min(1,d.value/maxV);
+          const alpha=t*0.9+0.05;
+          return <rect key={i} x={d.day*cw} y={d.hour*ch} width={cw-0.5} height={ch-0.5}
+            fill={color} opacity={alpha} rx={0.5}/>;
+        })}
+      </svg>
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:8,color:'#9ca3af',marginTop:2}}>
+        <span>Jan</span><span>Apr</span><span>Jul</span><span>Okt</span><span>Dez</span>
+      </div>
+    </div>
+  );
+}
+
+// Konfigurationsvergleich: relevante Felder die Ergebnisse beeinflussen
+const CFG_KEYS=[
+  'haushaltKWh','waermeKWh','evKWh',
+  'pvAktiv','pvKWp','pvSpezErtrag','weatherSeed',
+  'speicherAktiv','speicherKWh',
+  'tarifModus','batterieStrategie','strompreis','spotScale',
+  'einspeiseverguetung','einspeiseModus',
+  'pvKostenProKWp','speicherKostenProKWh',
+  'pvLebensdauer','speicherLebensdauer','zinssatz','betriebskostenAnteil',
+  'hemsAktiv','hemsEvAktiv','hemsWpAktiv','hemsAbfahrt','hemsLadeleistung','hemsStrategie','hemsWpFlex',
+];
+
+function cfgKey(state) {
+  if(!state) return '';
+  return CFG_KEYS.map(k=>String(state[k]??'')).join('|');
+}
+
+function cfgDiff(a,b) {
+  // Gibt Liste der Felder zurück die sich unterscheiden
+  if(!a||!b) return CFG_KEYS;
+  return CFG_KEYS.filter(k=>String(a[k]??'')!==String(b[k]??''));
+}
+
+// Lesbare Label für Diff-Parameter
+const CFG_LABEL={
+  haushaltKWh:'Haushalt kWh',waermeKWh:'Wärme kWh',evKWh:'EV kWh',
+  pvAktiv:'PV aktiv',pvKWp:'PV kWp',pvSpezErtrag:'PV Ertrag',weatherSeed:'Wetter-Seed',
+  speicherAktiv:'Speicher aktiv',speicherKWh:'Speicher kWh',
+  tarifModus:'Tarif',batterieStrategie:'Batt.-Strategie',strompreis:'Strompreis',spotScale:'Spot-Skalierung',
+  einspeiseverguetung:'Einspeisevg.',einspeiseModus:'Einspeisemodus',
+  pvKostenProKWp:'PV-Kosten/kWp',speicherKostenProKWh:'Speicher-Kosten/kWh',
+  pvLebensdauer:'PV-Laufzeit',speicherLebensdauer:'Speicher-Laufzeit',
+  zinssatz:'Zinssatz',betriebskostenAnteil:'Betriebskosten',
+  hemsAktiv:'HEMS',hemsEvAktiv:'HEMS EV',hemsWpAktiv:'HEMS WP',
+  hemsAbfahrt:'Abfahrt',hemsLadeleistung:'Ladeleistung',hemsStrategie:'Ladestrategie',hemsWpFlex:'WP-Flex',
+};
+
+function cfgSummary(state) {
+  if(!state) return '';
+  const parts=[];
+  if(state.pvAktiv) parts.push(`${state.pvKWp} kWp PV`);
+  if(state.speicherAktiv) parts.push(`${state.speicherKWh} kWh Speicher`);
+  parts.push(`${(state.strompreis*100).toFixed(0)} ct`);
+  if(state.tarifModus==='dynamisch') parts.push('dyn.');
+  if(state.spotScale&&state.spotScale!==1.0) parts.push(`${state.spotScale}× Spot`);
+  if(state.hemsAktiv) parts.push('HEMS');
+  if(state.batterieStrategie==='arbitrage') parts.push('Arbitrage');
+  return parts.join(' · ');
+}
+
+// ============================================================
+// TOOLTIP
+// ============================================================
+function Tip({text,children}) {
+  const [show,setShow]=React.useState(false);
+  return(
+    <span style={{position:'relative',display:'inline-flex',alignItems:'center'}}
+      onMouseEnter={()=>setShow(true)} onMouseLeave={()=>setShow(false)}
+      onTouchStart={()=>setShow(v=>!v)}>
+      {children}
+      {show&&<span style={{
+        position:'absolute',bottom:'calc(100% + 6px)',left:'50%',transform:'translateX(-50%)',
+        background:'#1f2937',color:'#f9fafb',fontSize:10,lineHeight:1.5,
+        padding:'6px 10px',whiteSpace:'nowrap',zIndex:99,pointerEvents:'none',
+        boxShadow:'0 2px 8px rgba(0,0,0,0.18)',maxWidth:220,whiteSpace:'normal',
+        textAlign:'left',fontWeight:400,textTransform:'none',letterSpacing:0,
+      }}>
+        {text}
+        <span style={{position:'absolute',top:'100%',left:'50%',transform:'translateX(-50%)',
+          borderLeft:'5px solid transparent',borderRight:'5px solid transparent',
+          borderTop:'5px solid #1f2937',display:'block',width:0,height:0}}/>
+      </span>}
+    </span>
+  );
+}
+
+// ============================================================
+// PANEL 07: VERGLEICH
+// ============================================================
+function PanelVergleich({snapshots,currentSim,currentState,isMobile}) {
+  const [dayIdx,setDayIdx]=React.useState(196);
+  const [hidden,setHidden]=React.useState(new Set());
+
+  // Aktuell=Blau, S1=Orange, S2=Lila, S3=Grün
+  const COLORS=['#3b82f6','#f97316','#8b5cf6','#10b981'];
+
+  // currentSim normalisieren
+  const currentSimNorm=React.useMemo(()=>{
+    if(!currentSim) return null;
+    const gi=Array.isArray(currentSim.gridImport)?currentSim.gridImport:
+              Array.isArray(currentSim.resGi)?currentSim.resGi:new Array(8760).fill(0);
+    const sp=Array.isArray(currentSim.spot)?currentSim.spot:new Array(8760).fill(0);
+    const pvA=Array.isArray(currentSim.resPv)?currentSim.resPv:new Array(8760).fill(0);
+    const soc=Array.isArray(currentSim.resSoc)?currentSim.resSoc:new Array(8760).fill(0);
+    return {...currentSim,gridImport:gi,spot:sp,pv:pvA,resSoc:soc,
+      heatmapImportCmp:aggHeatmap(gi,5),
+      heatmapSocCmp:aggHeatmap(soc,5),
+    };
+  },[currentSim]);
+
+  const snapshotSims=React.useMemo(()=>snapshots.map(s=>{
+    if(!s) return null;
+    const r=runSimForState(s);
+    if(!r) return null;
+    r.heatmapImportCmp=aggHeatmap(r.gridImport,5);
+    r.heatmapSocCmp=aggHeatmap(r.resSoc||new Array(8760).fill(0),5);
+    return r;
+  }),[snapshots]);
+
+  // Alle Slots — Duplikat-Erkennung via cfgKey
+  const allSlots=React.useMemo(()=>{
+    const raw=[
+      {label:'Aktuell',state:currentState,sim:currentSimNorm,color:COLORS[0]},
+      {label:'S1',state:snapshots[0],sim:snapshotSims[0],color:COLORS[1]},
+      {label:'S2',state:snapshots[1],sim:snapshotSims[1],color:COLORS[2]},
+      {label:'S3',state:snapshots[2],sim:snapshotSims[2],color:COLORS[3]},
+    ].filter(s=>s.sim!==null);
+
+    const currentKey=cfgKey(currentState);
+    return raw.map((s,i)=>{
+      const key=cfgKey(s.state);
+      const isDupOfCurrent=s.label!=='Aktuell'&&key===currentKey;
+      const dupOf=raw.slice(0,i).find((r,j)=>j>0&&r.label!==s.label&&cfgKey(r.state)===key)?.label||null;
+      const roi=s.sim.totalInvest>0?s.sim.nettoErsparnis/s.sim.totalInvest:null;
+      // Diff zu Aktuell
+      const diffToRef=i===0?[]:cfgDiff(raw[0].state,s.state);
+      return {...s,isDupOfCurrent,dupOf,roi,diffToRef,cfgKey:key};
+    });
+  },[currentSimNorm,snapshotSims,currentState,snapshots]);
+
+  const toggleHidden=(label)=>{
+    setHidden(h=>{const n=new Set(h);n.has(label)?n.delete(label):n.add(label);return n;});
+  };
+  const slots=allSlots.filter(s=>!hidden.has(s.label));
+
+  const monthOf=(d)=>{
+    const md=[31,28,31,30,31,30,31,31,30,31,30,31];
+    const mn=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+    let a=0;for(let m=0;m<12;m++){if(d<a+md[m])return `${d-a+1}. ${mn[m]}`;a+=md[m];}return '';
+  };
+
+  const kpiDefs=[
+    {key:'autarkie',             label:'Autarkie',        fmt:v=>`${(v*100).toFixed(1)} %`,   bestMax:true},
+    {key:'eigenverbrauchsquote', label:'Eigenverbrauch',  fmt:v=>`${(v*100).toFixed(1)} %`,   bestMax:true},
+    {key:'nettoErsparnis',       label:'Ersparnis/Jahr',  fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:true},
+    {key:'roi',                  label:'ROI',             fmt:v=>v!==null?`${(v*100).toFixed(1)} %`:'-',bestMax:true,fromSlot:true},
+    {key:'totalImport',          label:'Netzbezug',       fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:false},
+    {key:'totalExport',          label:'Einspeisung',     fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:true},
+    {key:'lcoeEigenverbrauch',   label:'LCOE',            fmt:v=>`${(v*100).toFixed(1)} ct`,  bestMax:false},
+    {key:'amortisation',         label:'Amortisation',    fmt:v=>isFinite(v)?`${v.toFixed(1)} a`:'-',bestMax:false},
+    {key:'totalInvest',          label:'Investition',     fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:false},
+  ];
+
+  const i0=dayIdx*24;
+  const hourLabels=Array.from({length:24},(_,h)=>h);
+
+  const mkDayData=(key)=>hourLabels.map(h=>{
+    const row={h:`${h}h`};
+    slots.forEach(s=>{
+      const arr=key==='gridImport'?s.sim.gridImport:key==='pv'?s.sim.pv:s.sim.spot;
+      row[s.label]=arr&&arr.length>i0+h?+(arr[i0+h]||0).toFixed(3):0;
+    });
+    return row;
+  });
+
+  const dayImportData=React.useMemo(()=>mkDayData('gridImport'),[slots,i0]);
+  const dayPVData=React.useMemo(()=>mkDayData('pv'),[slots,i0]);
+  const daySpotData=React.useMemo(()=>mkDayData('spot'),[slots,i0]);
+
+
+  // Heatmap: nur Slots mit verschiedener cfgKey vom Referenz + Referenz selbst
+  const refKey=allSlots[0]?allSlots[0].cfgKey:'';
+  const showHeatmaps=allSlots.filter(s=>s.cfgKey!==refKey).length>0;
+  const hmSlots=slots.filter((s,i)=>i===0||s.cfgKey!==refKey);
+
+  // KPI-Tabelle: Duplikate zu Gruppen zusammenfassen
+  const slotGroups=React.useMemo(()=>{
+    const groups=[];
+    const seen=new Map();
+    slots.forEach(s=>{
+      const k=s.cfgKey;
+      if(seen.has(k)){
+        groups[seen.get(k)].labels.push(s.label);
+        groups[seen.get(k)].colors.push(s.color);
+      } else {
+        seen.set(k,groups.length);
+        groups.push({labels:[s.label],colors:[s.color],sim:s.sim,state:s.state,roi:s.roi});
+      }
+    });
+    // Nach Autarkie absteigend sortieren (höchster Wert links)
+    groups.sort((a,b)=>(b.sim.autarkie||0)-(a.sim.autarkie||0));
+    return groups;
+  },[slots]);
+
+  if(allSlots.length<2){
+    return(
+      <div style={S.panel}>
+        <SecTitle nr="07" title="Vergleich" sub="Bis zu 3 Konfigurationen speichern und vergleichen" isMobile={isMobile}/>
+        <div style={{...S.card,padding:40,textAlign:'center',color:'#6b7280',lineHeight:2.2}}>
+          <div style={{fontSize:40,marginBottom:12}}>⇌</div>
+          <div style={{fontSize:15,fontWeight:600,color:'#111827'}}>Noch keine Snapshots gespeichert</div>
+          <div style={{fontSize:12,marginTop:8}}>
+            Mit <strong style={{color:'#68A2B9'}}>S1 · S2 · S3</strong> im Header Konfiguration speichern,
+            dann Einstellungen ändern und weiteren Snapshot setzen.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div style={S.panel}>
+      <SecTitle nr="07" title="Vergleich" sub="Konfigurationen · KPIs · Tagesansicht · Heatmap" isMobile={isMobile}/>
+
+      {/* Slot-Kästchen */}
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:16}}>
+        {allSlots.map((s,i)=>{
+          const isHidden=hidden.has(s.label);
+          const warn=s.isDupOfCurrent||s.dupOf;
+          const roiColor=s.roi===null?'#9ca3af':s.roi>=0.08?'#10b981':s.roi>=0.04?'#f59e0b':'#ef4444';
+          const st=s.state;
+          const sim=s.sim;
+
+          // Preiszeile: bei dynamisch = Ø Bezugspreis aus Simulation, sonst Festpreis
+          const isDyn=st&&st.tarifModus==='dynamisch';
+          const avgDyn=sim&&sim.avgDynPrice;
+          const preisLabel=isDyn
+            ?(avgDyn?`Ø ${(avgDyn*100).toFixed(1)} ct/kWh (dyn.)`:'Dyn. Tarif')
+            :`${st?(st.strompreis*100).toFixed(0):''} ct/kWh Festpreis`;
+
+          // Feature-Tags: NUR aktive/nicht-Standard Features
+          const featureTags=[];
+          if(st){
+            if(st.pvAktiv) featureTags.push({label:`${st.pvKWp} kWp PV`,color:'#f59e0b'});
+            if(st.speicherAktiv) featureTags.push({label:`${st.speicherKWh} kWh Speicher`,color:'#06b6d4'});
+            if(isDyn) featureTags.push({label:'Dyn. Tarif',color:'#8b5cf6'});
+            if(st.batterieStrategie==='arbitrage'&&st.speicherAktiv) featureTags.push({label:'Arbitrage',color:'#ec4899'});
+            if(st.hemsAktiv){
+              const hm=[];
+              if(st.hemsEvAktiv&&st.evKWh>0) hm.push('EV');
+              if(st.hemsWpAktiv&&st.waermeKWh>0) hm.push('WP');
+              if(hm.length>0) featureTags.push({label:`HEMS (${hm.join('+')})`,color:'#10b981'});
+            }
+            if(st.spotScale&&Math.abs(st.spotScale-1.0)>0.01) featureTags.push({label:`${st.spotScale}× Spot`,color:'#6b7280'});
+          }
+          return(
+            <button key={i} onClick={()=>toggleHidden(s.label)}
+              title={isHidden?`${s.label} einblenden`:`${s.label} ausblenden · ${s.isDupOfCurrent?'Identisch mit Aktuell':s.dupOf?`Identisch mit ${s.dupOf}`:'Klick zum Ausblenden'}`}
+              style={{
+              textAlign:'left',padding:'10px 14px',minWidth:160,maxWidth:240,
+              border:`1.5px solid ${warn?'#fbbf24':isHidden?'#e5e7eb':s.color}`,
+              background:isHidden?'#f9fafb':`${s.color}0d`,
+              opacity:isHidden?0.5:1,cursor:'pointer',position:'relative',transition:'opacity 0.15s',
+            }}>
+              {s.isDupOfCurrent&&<span style={{position:'absolute',top:-1,right:-1,background:'#f59e0b',color:'#fff',fontSize:8,padding:'1px 5px',fontWeight:700}}>≡ AKTUELL</span>}
+              {!s.isDupOfCurrent&&s.dupOf&&<span style={{position:'absolute',top:-1,right:-1,background:'#a78bfa',color:'#fff',fontSize:8,padding:'1px 5px',fontWeight:700}}>≡ {s.dupOf}</span>}
+              {/* Label + ROI */}
+              <div style={{display:'flex',alignItems:'baseline',gap:8,marginBottom:3}}>
+                <span style={{fontSize:13,fontWeight:700,color:isHidden?'#9ca3af':s.color}}>{s.label}</span>
+                {s.roi!==null&&<span style={{fontSize:11,fontWeight:600,color:isHidden?'#d1d5db':roiColor}}>ROI {(s.roi*100).toFixed(1)}%</span>}
+                {isHidden&&<span style={{fontSize:9,color:'#9ca3af'}}>AUS</span>}
+              </div>
+              {/* Preiszeile */}
+              {st&&<div style={{fontSize:10,color:isHidden?'#d1d5db':'#6b7280',marginBottom:featureTags.length>0?5:0}}>
+                {preisLabel}
+              </div>}
+              {/* Feature-Tags: nur aktive Features */}
+              {featureTags.length>0&&!isHidden&&(
+                <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                  {featureTags.map((ft,j)=>(
+                    <span key={j} style={{padding:'1px 6px',fontSize:9,fontWeight:600,
+                      background:`${ft.color}18`,border:`1px solid ${ft.color}50`,color:ft.color}}>
+                      {ft.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Warnung identische Konfigurationen */}
+      {allSlots.some(s=>s.isDupOfCurrent||s.dupOf)&&(
+        <div style={{padding:'8px 14px',background:'#fffbeb',border:'1px solid #fbbf24',fontSize:11,color:'#92400e',marginBottom:16,lineHeight:1.6}}>
+          <strong>Identische Konfigurationen erkannt</strong> — in der KPI-Tabelle zusammengefasst.
+        </div>
+      )}
+
+      {slots.length<2&&(
+        <div style={{...S.card,padding:20,textAlign:'center',color:'#6b7280',marginBottom:16}}>Mindestens 2 Konfigurationen einblenden.</div>
+      )}
+
+      {slots.length>=2&&<>
+        {/* KPI-Tabelle mit Gruppen-Zusammenfassung */}
+        <div style={{...S.card,marginBottom:16,overflowX:'auto'}}>
+          <div style={S.cardLabel}>Kennzahlen-Vergleich · Bestwert ★ · Gleiche Szenarien zusammengefasst</div>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:isMobile?11:12}}>
+            <thead>
+              <tr style={{borderBottom:'2px solid #e5e7eb'}}>
+                <th style={{textAlign:'left',padding:'8px 10px',color:'#6b7280',fontWeight:600,fontSize:10,letterSpacing:'0.08em',textTransform:'uppercase'}}>Kennzahl</th>
+                {slotGroups.map((g,i)=>(
+                  <th key={i} style={{textAlign:'right',padding:'8px 10px',fontWeight:700,fontSize:12}}>
+                    {g.labels.map((lbl,j)=>(
+                      <span key={j} style={{color:g.colors[j],marginLeft:j>0?4:0}}>{lbl}</span>
+                    ))}
+                    {g.labels.length>1&&<span style={{fontSize:8,color:'#9ca3af',display:'block',fontWeight:400}}>identisch</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                {key:'autarkie',label:'Autarkie',tip:'Anteil des Eigenbedarfs der ohne Netzbezug gedeckt wird. 100% = vollständige Unabhängigkeit.',fmt:v=>`${(v*100).toFixed(1)} %`,bestMax:true},
+                {key:'eigenverbrauchsquote',label:'Eigenverbrauch',tip:'Anteil der PV-Erzeugung der direkt oder via Speicher selbst verbraucht wird. Rest wird eingespeist.',fmt:v=>`${(v*100).toFixed(1)} %`,bestMax:true},
+                {key:'nettoErsparnis',label:'Ersparnis/Jahr',tip:'Jährliche Netto-Ersparnis nach Abzug von Kapitalkosten (Annuität) und Betriebskosten.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:true},
+                {key:'roi',label:'ROI',tip:'Return on Investment: Netto-Ersparnis / Gesamtinvestition. Gibt an wie viel Prozent der Investition jährlich zurückfließen.',fmt:v=>v!==null?`${(v*100).toFixed(1)} %`:'-',bestMax:true,fromSlot:true},
+                {key:'totalImport',label:'Netzbezug',tip:'Jährlicher Strombezug aus dem Netz in kWh.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:false},
+                {key:'totalExport',label:'Einspeisung',tip:'Jährlich ins Netz eingespeiste PV-Überschussenergie in kWh.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} kWh`,bestMax:true},
+                {key:'lcoeEigenverbrauch',label:'LCOE',tip:'Levelized Cost of Energy: Vollkosten des selbst erzeugten Stroms in ct/kWh (Invest + Betrieb / Eigenverbrauch).',fmt:v=>`${(v*100).toFixed(1)} ct`,bestMax:false},
+                {key:'amortisation',label:'Amortisation',tip:'Statische Amortisationszeit: Investition / jährlicher Cash-Flow (Ersparnis minus Betriebskosten).',fmt:v=>isFinite(v)?`${v.toFixed(1)} a`:'-',bestMax:false},
+                {key:'totalInvest',label:'Investition',tip:'Gesamtinvestition in PV-Anlage und Batteriespeicher.',fmt:v=>`${Math.round(v).toLocaleString('de-DE')} €`,bestMax:false},
+              ].map(kpi=>{
+                const vals=slotGroups.map(g=>{
+                  const v=kpi.fromSlot?g.roi:g.sim[kpi.key];
+                  return typeof v==='number'?v:NaN;
+                });
+                const finite=vals.filter(v=>isFinite(v)&&!isNaN(v));
+                const best=finite.length>1?(kpi.bestMax?Math.max(...finite):Math.min(...finite)):null;
+                const allSame=finite.length>1&&finite.every(v=>Math.abs(v-finite[0])<0.001);
+                return(
+                  <tr key={kpi.key} style={{borderBottom:'1px solid #f3f4f6',background:allSame?'#fafafa':'transparent'}}>
+                    <td style={{padding:'7px 10px',color:allSame?'#9ca3af':'#4b5563',fontWeight:600,fontSize:10,textTransform:'uppercase',letterSpacing:'0.04em'}}>
+                      <Tip text={kpi.tip}>
+                        <span style={{borderBottom:'1px dotted #9ca3af',cursor:'help'}}>{kpi.label}</span>
+                      </Tip>
+                      {allSame&&<span style={{marginLeft:4,fontSize:8,color:'#d1d5db'}}>≡</span>}
+                    </td>
+                    {vals.map((v,i)=>{
+                      const g=slotGroups[i];
+                      const isBest=best!==null&&isFinite(v)&&Math.abs(v-best)<0.001&&!allSame;
+                      return(
+                        <td key={i} style={{textAlign:'right',padding:'7px 10px',fontWeight:isBest?700:400,
+                          color:allSame?'#9ca3af':isBest?g.colors[0]:'#111827',
+                          background:isBest?`${g.colors[0]}18`:'transparent'}}>
+                          {isFinite(v)?kpi.fmt(v):'-'}
+                          {isBest&&<span style={{marginLeft:3,fontSize:9}}>★</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:6}}>≡ Identische Werte ausgegraut · Identische Szenarien in einer Spalte zusammengefasst.</div>
+        </div>
+
+        {/* Monatsverlauf */}
+        <div style={isMobile?S.gm:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+          <div style={S.card}>
+            <div style={S.cardLabel}>Netzbezug / Monat [kWh]</div>
+            <ResponsiveContainer width="100%" height={isMobile?170:210}>
+              <LineChart margin={{top:4,right:8,left:-20,bottom:0}}>
+                <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                <XAxis dataKey="month" allowDuplicatedCategory={false} tick={{fill:'#6b7280',fontSize:9}}/>
+                <YAxis tick={{fill:'#6b7280',fontSize:9}}/>
+                <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}/>
+                <Legend wrapperStyle={{fontSize:10}}/>
+                {slots.map((s,i)=>(
+                  <Line key={i} data={s.sim.monthly} dataKey="gridImport" name={s.label}
+                    stroke={s.color} strokeWidth={2} strokeDasharray={i===0?'':'5 3'} dot={false} isAnimationActive={false}/>
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={S.card}>
+            <div style={S.cardLabel}>PV-Erzeugung / Monat [kWh]</div>
+            <ResponsiveContainer width="100%" height={isMobile?170:210}>
+              <LineChart margin={{top:4,right:8,left:-20,bottom:0}}>
+                <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                <XAxis dataKey="month" allowDuplicatedCategory={false} tick={{fill:'#6b7280',fontSize:9}}/>
+                <YAxis tick={{fill:'#6b7280',fontSize:9}}/>
+                <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}}/>
+                <Legend wrapperStyle={{fontSize:10}}/>
+                {slots.map((s,i)=>(
+                  <Line key={i} data={s.sim.monthly} dataKey="pv" name={s.label}
+                    stroke={s.color} strokeWidth={2} strokeDasharray={i===0?'':'5 3'} dot={false} isAnimationActive={false}/>
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Jahres-Heatmaps: Netzbezug + Speicherstand */}
+        {showHeatmaps&&(
+          <div style={{...S.card,marginBottom:16}}>
+            <div style={S.cardLabel}>Jahres-Heatmaps · nur abweichende Konfigurationen</div>
+            <div style={{fontSize:10,color:'#6b7280',marginBottom:14}}>Stunde (vertikal 0–23h) × Tag (horizontal Jan–Dez) · Intensität proportional zum Wert.</div>
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:8}}>Netzbezug [kW]</div>
+              <div style={{display:'flex',gap:20,flexWrap:'wrap'}}>
+                {hmSlots.map((s,i)=>(
+                  <div key={i}>
+                    <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:4}}>
+                      <span style={{width:7,height:7,borderRadius:'50%',background:s.color,display:'inline-block'}}/>
+                      <span style={{fontSize:10,fontWeight:700,color:s.color}}>{s.label}</span>
+                    </div>
+                    <HeatmapImportSmall data={s.sim.heatmapImportCmp} color={s.color} title=""/>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {hmSlots.some(s=>s.state&&s.state.speicherAktiv&&s.state.speicherKWh>0)&&(
+              <div>
+                <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:8}}>Speicherstand [kWh]</div>
+                <div style={{display:'flex',gap:20,flexWrap:'wrap'}}>
+                  {hmSlots.map((s,i)=>{
+                    const hasSp=s.state&&s.state.speicherAktiv&&s.state.speicherKWh>0;
+                    return(
+                      <div key={i}>
+                        <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:4}}>
+                          <span style={{width:7,height:7,borderRadius:'50%',background:s.color,display:'inline-block'}}/>
+                          <span style={{fontSize:10,fontWeight:700,color:s.color}}>{s.label}</span>
+                        </div>
+                        {hasSp
+                          ?<HeatmapImportSmall data={s.sim.heatmapSocCmp} color={s.color} title=""/>
+                          :<div style={{fontSize:9,color:'#9ca3af',width:219,paddingTop:8}}>Kein Speicher</div>
+                        }
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tagesansicht */}
+        <div style={{...S.card}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,gap:16,flexWrap:'wrap'}}>
+            <div style={{...S.cardLabel,marginBottom:0}}>Tagesansicht</div>
+            <div style={{display:'flex',alignItems:'center',gap:10,flex:1,maxWidth:420}}>
+              <span style={{fontSize:11,color:'#6b7280',whiteSpace:'nowrap'}}>Tag:</span>
+              <input type="range" min={0} max={364} value={dayIdx}
+                onChange={e=>setDayIdx(parseInt(e.target.value))}
+                style={{flex:1,accentColor:'#68A2B9'}}/>
+              <span style={{fontSize:12,fontWeight:700,color:'#111827',minWidth:80,textAlign:'right'}}>{monthOf(dayIdx)}</span>
+            </div>
+          </div>
+          <div style={isMobile?S.gm:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+            <div>
+              <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:6}}>Netzbezug [kW]</div>
+              <ResponsiveContainer width="100%" height={isMobile?140:180}>
+                <LineChart data={dayImportData} margin={{top:4,right:8,left:-20,bottom:0}}>
+                  <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                  <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} interval={3}/>
+                  <YAxis tick={{fill:'#6b7280',fontSize:9}}/>
+                  <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}} formatter={(v,n)=>[`${(+v).toFixed(2)} kW`,n]}/>
+                  <Legend wrapperStyle={{fontSize:10}}/>
+                  {slots.map((s,i)=><Line key={i} dataKey={s.label} stroke={s.color} strokeWidth={2} strokeDasharray={i===0?'':'5 3'} dot={false} isAnimationActive={false}/>)}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:6}}>PV-Erzeugung [kW]</div>
+              <ResponsiveContainer width="100%" height={isMobile?140:180}>
+                <LineChart data={dayPVData} margin={{top:4,right:8,left:-20,bottom:0}}>
+                  <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                  <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} interval={3}/>
+                  <YAxis tick={{fill:'#6b7280',fontSize:9}}/>
+                  <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}} formatter={(v,n)=>[`${(+v).toFixed(2)} kW`,n]}/>
+                  <Legend wrapperStyle={{fontSize:10}}/>
+                  {slots.map((s,i)=><Line key={i} dataKey={s.label} stroke={s.color} strokeWidth={2} strokeDasharray={i===0?'':'5 3'} dot={false} isAnimationActive={false}/>)}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:6}}>Day-Ahead Preis [ct/kWh]</div>
+            <ResponsiveContainer width="100%" height={isMobile?120:150}>
+              <LineChart data={daySpotData} margin={{top:4,right:8,left:-20,bottom:0}}>
+                <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+                <XAxis dataKey="h" tick={{fill:'#6b7280',fontSize:9}} interval={3}/>
+                <YAxis tick={{fill:'#6b7280',fontSize:9}}/>
+                <Tooltip contentStyle={{background:'#fff',border:'1px solid #e5e7eb',fontSize:11}} formatter={(v,n)=>[`${(+v).toFixed(2)} ct`,n]}/>
+                <ReferenceLine y={0} stroke="#9ca3af" strokeDasharray="3 3"/>
+                <Legend wrapperStyle={{fontSize:10}}/>
+                {slots.map((s,i)=><Line key={i} dataKey={s.label} stroke={s.color} strokeWidth={2} strokeDasharray={i===0?'':'5 3'} dot={false} isAnimationActive={false}/>)}
+              </LineChart>
+            </ResponsiveContainer>
+            <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>Börsenstrompreis vor Aufschlägen.</div>
+          </div>
+        </div>
+      </>}
+    </div>
+  );
+}
+
